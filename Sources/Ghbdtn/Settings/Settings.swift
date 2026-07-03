@@ -109,6 +109,9 @@ final class Settings: ObservableObject {
     // MARK: Hotkeys
     @Published var manualConvertHotkey: Hotkey
     @Published var whisperHotkey: Hotkey
+    /// Cancels a live dictation without inserting. May be a bare key (Escape
+    /// by default): it is registered only for the duration of a session.
+    @Published var voiceCancelHotkey: Hotkey
 
     // MARK: Cloud AI
     @Published var aiEnabled: Bool
@@ -133,6 +136,9 @@ final class Settings: ObservableObject {
     @Published var whisperCloudAPIKey: String
     /// Where the dictation HUD appears: "mouse" (next to the cursor) | "top".
     @Published var whisperHUDPlacement: String
+    /// Leave the transcript on the clipboard after insertion, so a failed
+    /// insert is recoverable with ⌘V.
+    @Published var whisperCopyToClipboard: Bool
 
     private init() {
         isLoading = true
@@ -154,7 +160,8 @@ final class Settings: ObservableObject {
             Keys.whisperLanguage: "auto",
             Keys.whisperCloudBaseURL: "https://api.openai.com/v1",
             Keys.whisperCloudModel: "gpt-4o-transcribe",
-            Keys.whisperHUDPlacement: "mouse"
+            Keys.whisperHUDPlacement: "mouse",
+            Keys.whisperCopyToClipboard: true
         ])
 
         autoSwitchEnabled = defaults.bool(forKey: Keys.autoSwitchEnabled)
@@ -170,6 +177,8 @@ final class Settings: ObservableObject {
             ?? Hotkey(keyCode: 0x31, modifiers: UInt32(controlKeyMask | optionKeyMask), enabled: true) // ⌃⌥Space
         whisperHotkey = Settings.decodeHotkey(defaults.data(forKey: Keys.whisperHotkey))
             ?? Hotkey(keyCode: 0x09, modifiers: UInt32(controlKeyMask | optionKeyMask), enabled: true) // ⌃⌥V
+        voiceCancelHotkey = Settings.decodeHotkey(defaults.data(forKey: Keys.voiceCancelHotkey))
+            ?? Hotkey(keyCode: 0x35, modifiers: 0, enabled: true) // ⎋ Escape
 
         aiEnabled = defaults.bool(forKey: Keys.aiEnabled)
         aiBaseURL = defaults.string(forKey: Keys.aiBaseURL) ?? "https://api.openai.com/v1"
@@ -185,6 +194,7 @@ final class Settings: ObservableObject {
         whisperCloudModel = defaults.string(forKey: Keys.whisperCloudModel) ?? "gpt-4o-transcribe"
         whisperCloudAPIKey = Keychain.get(account: "whisper-api-key") ?? ""
         whisperHUDPlacement = defaults.string(forKey: Keys.whisperHUDPlacement) ?? "mouse"
+        whisperCopyToClipboard = defaults.bool(forKey: Keys.whisperCopyToClipboard)
 
         isLoading = false
         wireUp()
@@ -211,6 +221,7 @@ final class Settings: ObservableObject {
         persist($excludedBundleIDs) { self.defaults.set($0, forKey: Keys.excludedBundleIDs) }
         persist($manualConvertHotkey) { self.defaults.set(Settings.encodeHotkey($0), forKey: Keys.manualConvertHotkey) }
         persist($whisperHotkey) { self.defaults.set(Settings.encodeHotkey($0), forKey: Keys.whisperHotkey) }
+        persist($voiceCancelHotkey) { self.defaults.set(Settings.encodeHotkey($0), forKey: Keys.voiceCancelHotkey) }
         persist($aiEnabled) { self.defaults.set($0, forKey: Keys.aiEnabled) }
         persist($aiBaseURL) { self.defaults.set($0, forKey: Keys.aiBaseURL) }
         persist($aiModel) { self.defaults.set($0, forKey: Keys.aiModel) }
@@ -224,6 +235,7 @@ final class Settings: ObservableObject {
         persist($whisperCloudModel) { self.defaults.set($0, forKey: Keys.whisperCloudModel) }
         persist($whisperCloudAPIKey) { Keychain.set($0, account: "whisper-api-key") }
         persist($whisperHUDPlacement) { self.defaults.set($0, forKey: Keys.whisperHUDPlacement) }
+        persist($whisperCopyToClipboard) { self.defaults.set($0, forKey: Keys.whisperCopyToClipboard) }
     }
 
     // MARK: - Helpers
@@ -253,6 +265,7 @@ final class Settings: ObservableObject {
         static let excludedBundleIDs = "excludedBundleIDs"
         static let manualConvertHotkey = "manualConvertHotkey"
         static let whisperHotkey = "whisperHotkey"
+        static let voiceCancelHotkey = "voiceCancelHotkey"
         static let aiEnabled = "aiEnabled"
         static let aiBaseURL = "aiBaseURL"
         static let aiModel = "aiModel"
@@ -264,6 +277,7 @@ final class Settings: ObservableObject {
         static let whisperCloudBaseURL = "whisperCloudBaseURL"
         static let whisperCloudModel = "whisperCloudModel"
         static let whisperHUDPlacement = "whisperHUDPlacement"
+        static let whisperCopyToClipboard = "whisperCopyToClipboard"
     }
 }
 

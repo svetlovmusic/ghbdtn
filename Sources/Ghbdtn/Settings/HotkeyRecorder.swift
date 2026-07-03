@@ -6,20 +6,26 @@ import Carbon
 /// and it stores the Carbon keycode + modifier flags into a `Hotkey` binding.
 struct HotkeyRecorder: NSViewRepresentable {
     @Binding var hotkey: Hotkey
+    /// Allow recording a key with no modifiers (e.g. bare Escape). Only for
+    /// hotkeys that are session-scoped and never captured globally.
+    var allowsBareKeys = false
 
     func makeNSView(context: Context) -> RecorderButton {
         let button = RecorderButton()
         button.onChange = { self.hotkey = $0 }
+        button.allowsBareKeys = allowsBareKeys
         button.hotkey = hotkey
         return button
     }
 
     func updateNSView(_ nsView: RecorderButton, context: Context) {
+        nsView.allowsBareKeys = allowsBareKeys
         nsView.hotkey = hotkey
     }
 
     final class RecorderButton: NSButton {
         var onChange: ((Hotkey) -> Void)?
+        var allowsBareKeys = false
         var hotkey: Hotkey = .disabled { didSet { refreshTitle() } }
         private var recording = false
 
@@ -44,8 +50,9 @@ struct HotkeyRecorder: NSViewRepresentable {
 
         override func keyDown(with event: NSEvent) {
             guard recording else { super.keyDown(with: event); return }
-            // Escape cancels; Delete clears.
-            if event.keyCode == UInt16(kVK_Escape) {
+            // Escape cancels (unless bare keys are recordable — then it IS a
+            // valid binding, e.g. the dictation-cancel key); Delete clears.
+            if event.keyCode == UInt16(kVK_Escape) && !allowsBareKeys {
                 recording = false; refreshTitle(); return
             }
             if event.keyCode == UInt16(kVK_Delete) {
@@ -55,8 +62,9 @@ struct HotkeyRecorder: NSViewRepresentable {
                 return
             }
             let carbonMods = Self.carbonModifiers(from: event.modifierFlags)
-            // Require at least one modifier to avoid stealing plain keys.
-            guard carbonMods != 0 else { NSSound.beep(); return }
+            // Require at least one modifier to avoid stealing plain keys —
+            // except for session-scoped hotkeys that opt into bare keys.
+            guard carbonMods != 0 || allowsBareKeys else { NSSound.beep(); return }
             let hk = Hotkey(keyCode: UInt32(event.keyCode), modifiers: carbonMods, enabled: true)
             recording = false
             hotkey = hk
