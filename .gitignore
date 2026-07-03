@@ -13,3 +13,7 @@ DerivedData/
 
 # macOS
 .DS_Store
+
+# Python (tools/ training scripts)
+__pycache__/
+*.pyc

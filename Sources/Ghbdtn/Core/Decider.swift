@@ -19,11 +19,15 @@ enum Decider {
     /// - Parameters:
     ///   - force: if true, always return the best alternative even if weak
     ///     (used by the manual hotkey).
+    ///   - isCompleteWord: false when the word is still being typed (live
+    ///     trigger) — the n-gram layer then scores it as a prefix and applies
+    ///     stricter thresholds.
     static func decide(strokes: [KeyStroke],
                        source: KeyboardLayout,
                        candidates: [KeyboardLayout],
                        sensitivity: Sensitivity,
-                       force: Bool = false) -> Decision? {
+                       force: Bool = false,
+                       isCompleteWord: Bool = true) -> Decision? {
         let translator = KeyTranslator.shared
         let scorer = LanguageScorer.shared
 
@@ -38,7 +42,7 @@ enum Decider {
         if !force && asTyped.contains(where: { $0.isNumber }) { return nil }
 
         let sourceLang = source.primaryLanguage ?? "en"
-        let typedScore = scorer.score(asTyped, language: sourceLang)
+        let typedScore = scorer.score(asTyped, language: sourceLang, completeWord: isCompleteWord)
 
         // Evaluate every *other* enabled layout as a possible intended target.
         var best: (layout: KeyboardLayout, score: LanguageScorer.Score, text: String)?
@@ -48,7 +52,7 @@ enum Decider {
             // that share letters — nothing would change visually).
             guard candidateText != asTyped else { continue }
             let lang = candidate.primaryLanguage ?? "en"
-            let score = scorer.score(candidateText, language: lang)
+            let score = scorer.score(candidateText, language: lang, completeWord: isCompleteWord)
 
             if best == nil || Self.rank(score) > Self.rank(best!.score) {
                 best = (candidate, score, candidateText)
@@ -60,7 +64,8 @@ enum Decider {
         let confident = Self.isConfident(
             typed: typedScore,
             candidate: best.score,
-            sensitivity: sensitivity
+            sensitivity: sensitivity,
+            isCompleteWord: isCompleteWord
         )
 
         guard confident || force else {
@@ -81,7 +86,8 @@ enum Decider {
     }
 
     /// Rank a candidate interpretation. A known word (dictionary or curated
-    /// frequent-word) wins outright; script match breaks remaining ties.
+    /// frequent-word) wins outright; the calibrated n-gram percentile breaks
+    /// ties between unknown candidates; script match breaks the rest.
     /// Bigram coverage is intentionally NOT used: with a 120k-word corpus it
     /// saturates (~1.0 for almost any letter sequence, incl. "ghbdtn"), so it
     /// carries no signal here.
@@ -90,50 +96,91 @@ enum Decider {
         if s.scriptMatch { r += 1.0 }
         if s.isCommonWord { r += 8.0 }
         if s.isDictionaryWord { r += 10.0 }
+        r += 2.0 * (s.ngramPercentile ?? 0.0)
         return r
     }
 
-    /// The core heuristic. We trust two reliable signals — the OS spelling
-    /// dictionary and a curated frequent-words list — and deliberately ignore
-    /// bigram statistics (they don't discriminate real words from
-    /// wrong-layout gibberish for this corpus).
-    ///
-    /// Ordering matters: the common-word override comes first because the OS
-    /// spellchecker occasionally *false-accepts* a wrong-layout string (it
-    /// calls "ghbdtn" a valid English word), which would otherwise veto the
-    /// obviously-correct conversion to "привет".
+    /// The core heuristic, layered by reliability:
+    ///  1. curated frequent-words list — immune to the OS dictionary's rare
+    ///     false-accepts (it calls "ghbdtn" a valid English word), so it comes
+    ///     first; this is exactly the flagship ghbdtn→привет case;
+    ///  2. the OS spelling dictionary (balanced/aggressive);
+    ///  3. the calibrated character 4-gram layer — for words neither of the
+    ///     above recognizes: names, slang, rare words, word prefixes.
+    /// Bigram statistics are deliberately ignored (they don't discriminate
+    /// real words from wrong-layout gibberish).
     private static func isConfident(typed: LanguageScorer.Score,
                                     candidate: LanguageScorer.Score,
-                                    sensitivity: Sensitivity) -> Bool {
+                                    sensitivity: Sensitivity,
+                                    isCompleteWord: Bool) -> Bool {
         // The swapped text must actually be in the target language's script,
         // otherwise "converting" produces nonsense.
         guard candidate.scriptMatch else { return false }
 
-        // The curated frequent-words override applies in every mode: it's the
-        // one signal immune to the OS dictionary's rare false-accepts (it calls
-        // "ghbdtn" a valid English word), which is exactly the flagship case.
         if candidate.isCommonWord && !typed.isCommonWord {
             return true
         }
+        // A curated common word typed as-is is trusted unconditionally —
+        // never second-guess it with weaker signals.
+        if typed.isCommonWord { return false }
 
         switch sensitivity {
         case .cautious:
-            // Trust only the curated list — most conservative, fewest false
-            // positives (e.g. won't convert obscure dictionary words).
-            return false
+            // Don't trust the dictionary — it won't convert obscure
+            // dictionary words. The n-gram layer below still applies, with
+            // the strictest thresholds.
+            break
 
         case .balanced:
-            if typed.isCommonWord { return false }
             // Dictionary decisive: swapped is a real word, typed is not.
-            return candidate.isDictionaryWord && !typed.isDictionaryWord
+            if candidate.isDictionaryWord && !typed.isDictionaryWord { return true }
 
         case .aggressive:
-            if typed.isCommonWord { return false }
             if candidate.isDictionaryWord && !typed.isDictionaryWord { return true }
             // Both are valid dictionary words: prefer the candidate when it is
             // also a curated common word (rarely both — this nudges ambiguous
             // cases toward the more-likely-intended word).
-            return candidate.isDictionaryWord && candidate.isCommonWord
+            if candidate.isDictionaryWord && candidate.isCommonWord { return true }
         }
+
+        return ngramConfident(typed: typed, candidate: candidate,
+                              sensitivity: sensitivity, isCompleteWord: isCompleteWord)
+    }
+
+    /// The out-of-vocabulary layer: character 4-gram models calibrated to
+    /// per-language percentiles (LanguageScorer.Score.ngramPercentile), so the
+    /// two interpretations are compared on a common scale despite different
+    /// training corpora. Convert only when the swapped text reads like real
+    /// language AND the as-typed text reads like gibberish — both thresholds
+    /// come from an offline zero-false-positive sweep (tools/eval_thresholds.py).
+    ///
+    /// The typed side deliberately does NOT get a dictionary veto here: the OS
+    /// spellchecker false-accepts ~1 in 13 abracadabras, and a typed score at
+    /// gibberish level (≤ maxTyped, i.e. worse than 99.5% of real words)
+    /// combined with a plausible candidate outweighs such an accept. The
+    /// curated common-word veto above stays absolute.
+    private static func ngramConfident(typed: LanguageScorer.Score,
+                                       candidate: LanguageScorer.Score,
+                                       sensitivity: Sensitivity,
+                                       isCompleteWord: Bool) -> Bool {
+        // A candidate the model can't score (no model, too short, or chars
+        // outside the target alphabet) is never trusted.
+        guard let candP = candidate.ngramPercentile else { return false }
+
+        // As-typed percentile. A string with characters outside the source
+        // language's alphabet (";bpym" scored as English) is by definition
+        // not a word of that language — that IS the gibberish verdict, not a
+        // missing one. Any other unscoreable case means we can't judge — abstain.
+        let typedP: Double
+        if let p = typed.ngramPercentile {
+            typedP = p
+        } else if typed.ngramForeign {
+            typedP = 0.0
+        } else {
+            return false
+        }
+
+        let t = sensitivity.ngramThresholds(completeWord: isCompleteWord)
+        return candP >= t.minCandidate && typedP <= t.maxTyped
     }
 }

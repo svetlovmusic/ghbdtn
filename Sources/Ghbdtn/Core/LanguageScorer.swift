@@ -28,12 +28,25 @@ final class LanguageScorer {
         let isCommonWord: Bool
         /// Letters from the language's own script make up the string.
         let scriptMatch: Bool
+        /// Calibrated 4-gram score: where the string's per-character avg logP
+        /// sits among real words of the language (0…1). Comparable across
+        /// languages, unlike raw perplexity. nil when the n-gram model is not
+        /// loaded, the string is too short, or it has out-of-alphabet chars.
+        let ngramPercentile: Double?
+        /// The n-gram model is loaded but the string contains characters the
+        /// language's alphabet doesn't have (e.g. ";bpym" for English) — by
+        /// definition it is not a word of this language.
+        let ngramForeign: Bool
     }
 
     private var bigrams: [String: Set<String>] = [:]  // language → set of "ab" pairs
     /// language → curated set of frequent words. Built synchronously in init so
     /// it is ready before the very first keystroke (unlike the async bigrams).
     private var commonWords: [String: Set<String>] = [:]
+    /// language → character 4-gram model, loaded asynchronously in init.
+    /// Until a model is loaded, Score.ngramPercentile stays nil and the
+    /// Decider's n-gram layer simply abstains.
+    private var ngramModels: [String: NgramModel] = [:]
     private let spellChecker = NSSpellChecker.shared
     private var spellDocTag: Int = 0
     private var availableSpellLanguages: Set<String> = []
@@ -51,16 +64,28 @@ final class LanguageScorer {
 
     // MARK: - Public
 
-    func score(_ text: String, language: String) -> Score {
+    /// - Parameter completeWord: false when scoring a word still being typed
+    ///   (live mode) — the n-gram layer then scores it as a prefix, without
+    ///   the end-of-word transition.
+    func score(_ text: String, language: String, completeWord: Bool = true) -> Score {
         let lower = text.lowercased()
+        let lang = language.lowercased()
+        let model: NgramModel? = queue.sync { ngramModels[lang] }
         return Score(
             text: text,
             language: language,
             bigramCoverage: bigramCoverage(lower, language: language),
             isDictionaryWord: isDictionaryWord(text, language: language),
             isCommonWord: isCommonWord(text, language: language),
-            scriptMatch: scriptMatches(lower, language: language)
+            scriptMatch: scriptMatches(lower, language: language),
+            ngramPercentile: model?.percentile(of: lower, complete: completeWord),
+            ngramForeign: model?.hasForeignCharacters(lower) ?? false
         )
+    }
+
+    /// Is the character 4-gram model for this language loaded yet?
+    func hasNgramModel(for language: String) -> Bool {
+        queue.sync { ngramModels[language.lowercased()] != nil }
     }
 
     /// Is this an exact match in our curated frequent-words list for the language?
@@ -178,6 +203,19 @@ final class LanguageScorer {
             self.bigrams["en"] = en
             self.bigrams["ru"] = ru
             Log.info("Bigram models seeded: en=\(en.count) pairs, ru=\(ru.count) pairs")
+
+            for lang in ["en", "ru"] {
+                guard let url = NgramModel.locateModel(language: lang) else {
+                    Log.error("No n-gram model found for \(lang) — OOV detection disabled")
+                    continue
+                }
+                if let model = NgramModel(contentsOf: url) {
+                    self.ngramModels[lang] = model
+                    Log.info("N-gram model \(lang): \(model.sizeBytes / 1024) KB from \(url.path)")
+                } else {
+                    Log.error("Failed to parse n-gram model at \(url.path)")
+                }
+            }
         }
     }
 

@@ -10,6 +10,12 @@ let package = Package(
         .executableTarget(
             name: "Ghbdtn",
             path: "Sources/Ghbdtn",
+            resources: [
+                // Character 4-gram models (see tools/train_ngram.py). Packed
+                // into Ghbdtn_Ghbdtn.bundle next to the built binary; build.sh
+                // copies that bundle into the .app's Contents/Resources.
+                .copy("Resources/Models")
+            ],
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("Carbon"),

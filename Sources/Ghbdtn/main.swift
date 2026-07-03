@@ -6,9 +6,9 @@ import AppKit
 // (menu-bar-only) behavior and the CGEventTap run loop.
 
 // Headless self-test for the detection logic: `ghbdtn --selftest`.
+// Exits non-zero when any case fails, so it can gate commits/CI.
 if CommandLine.arguments.contains("--selftest") {
-    SelfTest.run()
-    exit(0)
+    exit(SelfTest.run() ? 0 : 1)
 }
 
 let app = NSApplication.shared

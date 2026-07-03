@@ -178,7 +178,8 @@ final class AutoSwitchEngine {
             strokes: strokes,
             source: source,
             candidates: layouts,
-            sensitivity: settings.sensitivity
+            sensitivity: settings.sensitivity,
+            isCompleteWord: final
         ) else { return }
 
         // If the local decision is confident, act. At final-eval time the
