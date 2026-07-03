@@ -139,6 +139,13 @@ final class AutoSwitchEngine {
             buffer.softReset()
 
         case .backspace:
+            // A backspace immediately after an auto-conversion is the user
+            // rejecting it. Veto that exact token so it isn't auto-converted
+            // again this session (the safe direction: at worst we skip a
+            // conversion they wanted, recoverable via the manual hotkey).
+            if let rejected = lastConversionOriginal {
+                buffer.veto(rejected)
+            }
             buffer.backspace()
             lastConversionOriginal = nil
 
