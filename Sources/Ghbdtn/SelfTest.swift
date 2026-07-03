@@ -51,14 +51,20 @@ enum SelfTest {
             let source: KeyboardLayout
             let expectConvert: Bool
             let complete: Bool
+            let sensitivity: Sensitivity
             let note: String
             init(keys: String, source: KeyboardLayout, expectConvert: Bool,
-                 complete: Bool = true, note: String) {
+                 complete: Bool = true, sensitivity: Sensitivity = .balanced, note: String) {
                 self.keys = keys; self.source = source
                 self.expectConvert = expectConvert; self.complete = complete
-                self.note = note
+                self.sensitivity = sensitivity; self.note = note
             }
         }
+        // Note: veps→музы converts in balanced/aggressive via the DICTIONARY
+        // layer ("музы" is a real Russian word, "veps" unknown to every English
+        // signal), independent of the n-gram layer. That pre-existing behavior
+        // is out of scope here; the `sensitivity` field is kept so per-mode
+        // n-gram regressions can be pinned in future.
         let cases: [Case] = [
             // -- The original six: dictionary + curated-list layers.
             Case(keys: "ghbdtn", source: en, expectConvert: true,  note: "ghbdtn → привет (flagship)"),
@@ -95,7 +101,7 @@ enum SelfTest {
             let st = strokes(for: c.keys)
             let asTyped = KeyTranslator.shared.interpret(st, layout: c.source)
             let decision = Decider.decide(strokes: st, source: c.source,
-                                          candidates: layouts, sensitivity: .balanced,
+                                          candidates: layouts, sensitivity: c.sensitivity,
                                           isCompleteWord: c.complete)
             let converted = decision?.confident == true
             let arrow = converted ? "\(asTyped) → \(decision!.correctedText)" : "\(asTyped) (kept)"
