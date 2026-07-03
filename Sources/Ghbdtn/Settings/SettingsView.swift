@@ -184,12 +184,20 @@ private struct HotkeysTab: View {
             }
             Section("Голосовой ввод (Whisper)") {
                 HStack {
-                    Text("Начать / остановить диктовку")
+                    Text("Начать / распознать и вставить")
                     Spacer()
                     HotkeyRecorder(hotkey: $settings.whisperHotkey)
                         .frame(width: 160, height: 24)
                 }
                 Text("Первое нажатие показывает панель записи, второе — распознаёт и вставляет текст в позицию курсора.")
+                    .font(.caption).foregroundColor(.secondary)
+                HStack {
+                    Text("Отменить диктовку (без вставки)")
+                    Spacer()
+                    HotkeyRecorder(hotkey: $settings.voiceCancelHotkey, allowsBareKeys: true)
+                        .frame(width: 160, height: 24)
+                }
+                Text("Действует только пока идёт запись — вне диктовки клавиша не перехватывается, поэтому можно назначить просто ⎋ Escape.")
                     .font(.caption).foregroundColor(.secondary)
             }
         }
@@ -248,6 +256,10 @@ private struct VoiceTab: View {
                     Text("Рядом с курсором мыши").tag("mouse")
                     Text("Сверху по центру экрана").tag("top")
                 }
+                Toggle("Копировать распознанный текст в буфер обмена",
+                       isOn: $settings.whisperCopyToClipboard)
+                Text("Страховка: если текст не вставился в поле, нажмите ⌘V — он остаётся в буфере. Прежнее содержимое буфера при этом заменяется.")
+                    .font(.caption).foregroundColor(.secondary)
             }
 
             Section("Движок") {

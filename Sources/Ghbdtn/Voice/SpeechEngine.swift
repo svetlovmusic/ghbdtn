@@ -74,6 +74,9 @@ final class DictationController: ObservableObject {
     /// Resident local engine: the whisper context stays loaded between
     /// dictations — model load, not inference, dominates latency.
     private let localEngine = LocalWhisperEngine()
+    /// Set when the user cancels while a transcription is in flight: the
+    /// result is dropped instead of inserted when it lands.
+    private var discardRequested = false
 
     private init() {
         capture.onLimitReached = { [weak self] in self?.recognize() }
@@ -148,6 +151,7 @@ final class DictationController: ObservableObject {
         }
         state = .recording
         elapsed = 0
+        discardRequested = false
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             guard let self else { return }
@@ -156,14 +160,25 @@ final class DictationController: ObservableObject {
                 self.elapsed = -startedAt.timeIntervalSinceNow
             }
         }
+        // The cancel key (Escape by default, possibly modifier-less) is
+        // registered only for the lifetime of the session — it must never
+        // shadow the real Escape outside dictation.
+        HotkeyCenter.shared.register(.voiceCancel, hotkey: Settings.shared.voiceCancelHotkey)
         showHUD()
         Log.info("Dictation started (engine=\(Settings.shared.voiceEngine))")
     }
 
-    /// Stop button: discard the recording, no transcription.
+    /// Stop button / Escape: discard without inserting. During recording it
+    /// drops the audio; during transcription it drops the pending result.
     func cancel() {
-        guard state == .recording else { return }
-        capture.stop()
+        switch state {
+        case .idle:
+            return
+        case .recording:
+            capture.stop()
+        case .transcribing:
+            discardRequested = true
+        }
         endSession()
         if let sink = testSink {
             testSink = nil
@@ -191,6 +206,10 @@ final class DictationController: ObservableObject {
                     throw SpeechError.tooShort
                 }
                 let raw = try await engine.transcribe(samples16k: samples16k, language: language)
+                if self.discardRequested {         // cancelled mid-transcription
+                    self.discardRequested = false
+                    return
+                }
                 let text = Self.cleanTranscript(raw)
                 self.endSession()
                 if let sink = self.testSink {
@@ -204,6 +223,10 @@ final class DictationController: ObservableObject {
                     Log.info("Dictation inserted \(text.count) chars")
                 }
             } catch {
+                if self.discardRequested {
+                    self.discardRequested = false
+                    return
+                }
                 self.endSession()
                 if let sink = self.testSink {
                     self.testSink = nil
@@ -221,6 +244,7 @@ final class DictationController: ObservableObject {
         timer?.invalidate()
         timer = nil
         state = .idle
+        HotkeyCenter.shared.unregister(.voiceCancel)
         hideHUD()
     }
 
@@ -284,13 +308,48 @@ final class DictationController: ObservableObject {
     /// the target field still owns the caret and synthetic events land there.
     func insert(_ text: String) {
         guard !text.isEmpty else { return }
-        // Short bursts type faster than a paste round-trip; long/multiline
-        // text goes through the clipboard — a single atomic ⌘V is far more
-        // reliable than hundreds of synthetic key events (Electron, autocomplete).
-        if text.count <= 24 && !text.contains("\n") {
-            TextInjector.shared.typeUnicode(text)
-        } else {
-            TextInjector.shared.paste(text)
+        let keepOnClipboard = Settings.shared.whisperCopyToClipboard
+        // The dictation hotkey is usually still physically held when the
+        // transcript arrives (⌃⌥V pressed a second time). Synthetic events
+        // merge with the hardware modifier state, so a ⌘V posted now reaches
+        // the app as ⌃⌥⌘V — a meaningless shortcut — and nothing is inserted.
+        // Wait for all modifiers to come up before injecting.
+        Self.whenModifiersReleased {
+            if keepOnClipboard {
+                // The transcript stays on the clipboard as a safety net: if
+                // the paste didn't land in this particular app, ⌘V recovers it.
+                TextInjector.shared.paste(text, keepOnClipboard: true)
+            } else if text.count <= 24 && !text.contains("\n") {
+                // Short bursts type faster than a paste round-trip.
+                TextInjector.shared.typeUnicode(text)
+            } else {
+                TextInjector.shared.paste(text)
+            }
+        }
+    }
+
+    /// True while any modifier key is physically held (HID state).
+    private nonisolated static func physicalModifiersDown() -> Bool {
+        let modifierKeyCodes: [CGKeyCode] = [
+            0x37, 0x36, // ⌘ left/right
+            0x3A, 0x3D, // ⌥ left/right
+            0x3B, 0x3E, // ⌃ left/right
+            0x38, 0x3C, // ⇧ left/right
+            0x3F        // fn
+        ]
+        return modifierKeyCodes.contains { CGEventSource.keyState(.hidSystemState, key: $0) }
+    }
+
+    /// Run `action` once every modifier key is released — or after ~2 s
+    /// regardless, so a stuck key can't swallow the transcript.
+    private static func whenModifiersReleased(attemptsLeft: Int = 40,
+                                              _ action: @escaping () -> Void) {
+        guard physicalModifiersDown(), attemptsLeft > 0 else {
+            action()
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            whenModifiersReleased(attemptsLeft: attemptsLeft - 1, action)
         }
     }
 

@@ -84,19 +84,27 @@ final class TextInjector {
     /// pasteboard write. Main-thread only.
     private var pendingRestore: DispatchWorkItem?
 
-    /// Paste `text` at the caret via the clipboard (⌘V), preserving the
-    /// user's pasteboard contents. Used for dictation output: one atomic
-    /// paste is far more reliable for long/multilingual text than hundreds of
-    /// synthetic key events (which slow apps can drop or reorder).
-    func paste(_ text: String) {
+    /// Paste `text` at the caret via the clipboard (⌘V). Used for dictation
+    /// output: one atomic paste is far more reliable for long/multilingual
+    /// text than hundreds of synthetic key events (which slow apps can drop
+    /// or reorder).
+    ///
+    /// - Parameter keepOnClipboard: when true, the text intentionally REPLACES
+    ///   the clipboard and stays there (safety net: if the paste didn't land,
+    ///   the user recovers it with ⌘V). When false, the previous clipboard is
+    ///   restored after a grace period.
+    func paste(_ text: String, keepOnClipboard: Bool = false) {
         let pasteboard = NSPasteboard.general
         pendingRestore?.cancel()
-        let savedItems = Self.snapshot(of: pasteboard)
+        pendingRestore = nil
+        let savedItems = keepOnClipboard ? [] : Self.snapshot(of: pasteboard)
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
         let ourWrite = pasteboard.changeCount
         postKey(keyCode: keyCode(for: "v"), flags: .maskCommand)
-        scheduleRestore(pasteboard: pasteboard, items: savedItems, ourChangeCount: ourWrite)
+        if !keepOnClipboard {
+            scheduleRestore(pasteboard: pasteboard, items: savedItems, ourChangeCount: ourWrite)
+        }
     }
 
     /// Restore the user's clipboard after the frontmost app has had time to

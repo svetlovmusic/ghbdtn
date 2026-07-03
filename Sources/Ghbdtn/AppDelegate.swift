@@ -253,6 +253,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         center.onAction(.voiceDictation) {
             Task { @MainActor in DictationController.shared.toggle() }
         }
+        // Registered/unregistered by DictationController per session — a bare
+        // Escape must not be captured while no dictation is running.
+        center.onAction(.voiceCancel) {
+            Task { @MainActor in DictationController.shared.cancel() }
+        }
         center.register(.manualConvert, hotkey: settings.manualConvertHotkey)
         center.register(.voiceDictation, hotkey: settings.whisperHotkey)
 
