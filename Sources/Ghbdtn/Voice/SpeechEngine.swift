@@ -264,7 +264,11 @@ final class DictationController: ObservableObject {
         if hud == nil {
             hud = DictationHUDPanel(controller: self, capture: capture)
         }
-        hud?.positionTopCenter()
+        if Settings.shared.whisperHUDPlacement == "top" {
+            hud?.positionTopCenter()
+        } else {
+            hud?.positionNearMouse()
+        }
         // NEVER NSApp.activate here — activating the app would steal the
         // caret from the field the user is dictating into.
         hud?.orderFrontRegardless()
