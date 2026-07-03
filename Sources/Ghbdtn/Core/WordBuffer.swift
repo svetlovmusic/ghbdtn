@@ -1,0 +1,88 @@
+import Foundation
+
+/// Accumulates the keystrokes of the word currently being typed, plus the
+/// last completed word (so a hotkey can convert it after the fact).
+///
+/// The buffer only ever holds physical keystrokes — *what keys were pressed* —
+/// never the interpreted text. Interpretation happens on demand per layout.
+final class WordBuffer {
+    /// Keystrokes of the word in progress.
+    private(set) var current: [KeyStroke] = []
+    /// The layout that was active while `current` was being typed.
+    private(set) var layoutID: String?
+
+    /// The last finished word (completed by space/punctuation) — kept so the
+    /// manual hotkey can still convert it. The delimiter character is stored
+    /// too so it can be re-emitted after a post-hoc conversion.
+    private(set) var lastWord: [KeyStroke] = []
+    private(set) var lastWordLayoutID: String?
+    private(set) var lastWordDelimiterChar: Character?
+
+    /// Words the user "took back" (converted, then immediately reverted or
+    /// retyped) — don't auto-convert them again this session.
+    private var vetoed: Set<String> = []
+
+    var isEmpty: Bool { current.isEmpty }
+    var count: Int { current.count }
+
+    func append(_ stroke: KeyStroke, activeLayoutID: String) {
+        if current.isEmpty {
+            layoutID = activeLayoutID
+        } else if layoutID != activeLayoutID {
+            // Layout changed mid-word (user switched manually) — restart.
+            hardReset()
+            layoutID = activeLayoutID
+        }
+        current.append(stroke)
+    }
+
+    /// Word finished by a delimiter (space, punctuation, return).
+    func complete(delimiterChar: Character?) {
+        if !current.isEmpty {
+            lastWord = current
+            lastWordLayoutID = layoutID
+            lastWordDelimiterChar = delimiterChar
+        }
+        current = []
+        layoutID = nil
+    }
+
+    func backspace() {
+        if !current.isEmpty {
+            current.removeLast()
+        }
+    }
+
+    /// Reset the in-progress word (mouse click, arrows, app switch, cmd-shortcut).
+    /// The last completed word survives soft resets so hotkey conversion still works.
+    func softReset() {
+        current = []
+        layoutID = nil
+    }
+
+    /// Full reset including the completed-word memory (app switch, secure input).
+    func hardReset() {
+        softReset()
+        lastWord = []
+        lastWordLayoutID = nil
+        lastWordDelimiterChar = nil
+    }
+
+    /// After the engine replaces a word, the buffer must forget it so the
+    /// replacement keystrokes we synthesize don't get re-evaluated.
+    func consumeLastWord() {
+        lastWord = []
+        lastWordLayoutID = nil
+        lastWordDelimiterChar = nil
+    }
+
+    // MARK: - Veto memory
+
+    func veto(_ word: String) {
+        vetoed.insert(word.lowercased())
+    }
+
+    func isVetoed(_ word: String) -> Bool {
+        vetoed.contains(word.lowercased())
+    }
+}

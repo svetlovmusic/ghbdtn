@@ -1,0 +1,15 @@
+# Swift Package Manager build output
+.build/
+.swiftpm/
+Package.resolved
+
+# Assembled app bundle (build artifact — produced by ./build.sh)
+ghbdtn.app/
+*.app/
+
+# Xcode
+*.xcodeproj/
+DerivedData/
+
+# macOS
+.DS_Store
