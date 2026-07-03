@@ -46,14 +46,35 @@ final class DictationHUDPanel: NSPanel {
     /// NSScreen.main is effectively the primary display, so prefer the screen
     /// the cursor is on: that's where the user is working.
     func positionTopCenter() {
-        let mouse = NSEvent.mouseLocation
-        let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
-            ?? NSScreen.main ?? NSScreen.screens.first
-        guard let screen else { return }
-        let visible = screen.visibleFrame
+        guard let (_, visible) = Self.screenUnderMouse() else { return }
         let size = frame.size
         setFrameOrigin(NSPoint(x: visible.midX - size.width / 2,
                                y: visible.maxY - size.height - 24))
+    }
+
+    /// Place the bubble next to the mouse cursor (slightly to the right),
+    /// flipping to the left when there's no room and clamping into the
+    /// visible frame so it never hangs off-screen.
+    func positionNearMouse() {
+        guard let (mouse, visible) = Self.screenUnderMouse() else { return }
+        let size = frame.size
+        let gap: CGFloat = 18
+        var origin = NSPoint(x: mouse.x + gap, y: mouse.y - size.height / 2)
+        if origin.x + size.width > visible.maxX - 8 {
+            origin.x = mouse.x - gap - size.width
+        }
+        origin.x = max(visible.minX + 8, min(origin.x, visible.maxX - size.width - 8))
+        origin.y = max(visible.minY + 8, min(origin.y, visible.maxY - size.height - 8))
+        setFrameOrigin(origin)
+    }
+
+    /// Mouse location + visible frame of the screen it is on.
+    private static func screenUnderMouse() -> (mouse: NSPoint, visible: NSRect)? {
+        let mouse = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
+            ?? NSScreen.main ?? NSScreen.screens.first
+        guard let screen else { return nil }
+        return (mouse, screen.visibleFrame)
     }
 }
 

@@ -131,6 +131,8 @@ final class Settings: ObservableObject {
     @Published var whisperCloudModel: String
     /// Keychain-backed; empty = fall back to the AI-layer key.
     @Published var whisperCloudAPIKey: String
+    /// Where the dictation HUD appears: "mouse" (next to the cursor) | "top".
+    @Published var whisperHUDPlacement: String
 
     private init() {
         isLoading = true
@@ -151,7 +153,8 @@ final class Settings: ObservableObject {
             Keys.whisperModel: "large-v3-turbo-q5_0",
             Keys.whisperLanguage: "auto",
             Keys.whisperCloudBaseURL: "https://api.openai.com/v1",
-            Keys.whisperCloudModel: "gpt-4o-transcribe"
+            Keys.whisperCloudModel: "gpt-4o-transcribe",
+            Keys.whisperHUDPlacement: "mouse"
         ])
 
         autoSwitchEnabled = defaults.bool(forKey: Keys.autoSwitchEnabled)
@@ -181,6 +184,7 @@ final class Settings: ObservableObject {
         whisperCloudBaseURL = defaults.string(forKey: Keys.whisperCloudBaseURL) ?? "https://api.openai.com/v1"
         whisperCloudModel = defaults.string(forKey: Keys.whisperCloudModel) ?? "gpt-4o-transcribe"
         whisperCloudAPIKey = Keychain.get(account: "whisper-api-key") ?? ""
+        whisperHUDPlacement = defaults.string(forKey: Keys.whisperHUDPlacement) ?? "mouse"
 
         isLoading = false
         wireUp()
@@ -219,6 +223,7 @@ final class Settings: ObservableObject {
         persist($whisperCloudBaseURL) { self.defaults.set($0, forKey: Keys.whisperCloudBaseURL) }
         persist($whisperCloudModel) { self.defaults.set($0, forKey: Keys.whisperCloudModel) }
         persist($whisperCloudAPIKey) { Keychain.set($0, account: "whisper-api-key") }
+        persist($whisperHUDPlacement) { self.defaults.set($0, forKey: Keys.whisperHUDPlacement) }
     }
 
     // MARK: - Helpers
@@ -258,6 +263,7 @@ final class Settings: ObservableObject {
         static let whisperLanguage = "whisperLanguage"
         static let whisperCloudBaseURL = "whisperCloudBaseURL"
         static let whisperCloudModel = "whisperCloudModel"
+        static let whisperHUDPlacement = "whisperHUDPlacement"
     }
 }
 
