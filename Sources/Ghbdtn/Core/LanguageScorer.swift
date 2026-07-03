@@ -129,6 +129,14 @@ final class LanguageScorer {
               core.allSatisfy({ $0.isLetter || $0 == "'" || $0 == "’" || $0 == "-" }) else {
             return false
         }
+        // NSSpellChecker splits on internal apostrophes/hyphens and never flags
+        // a lone single letter, so it rubber-stamps "g'l" — the Latin twin of
+        // "пэд", because 'э' sits on the apostrophe key — as a real word, and
+        // the n-gram gibberish net can't help (both are 3 chars, below its
+        // 4-char floor). A genuine word has at least one run of ≥2 consecutive
+        // letters; require it. Kills "g'l" / "a'b" / "v'h" while keeping
+        // "don't", "кто-то", "we're", "it".
+        guard Self.longestLetterRun(core) >= 2 else { return false }
         // Map plain code to a concrete dictionary if needed ("ru" → "ru", "en" → "en").
         guard hasSpellDictionary(for: language) else { return false }
         let range = spellChecker.checkSpelling(
@@ -140,6 +148,17 @@ final class LanguageScorer {
             wordCount: nil
         )
         return range.location == NSNotFound
+    }
+
+    /// Length of the longest run of consecutive letters in the string. Used to
+    /// reject apostrophe/hyphen-split junk ("g'l") that the spellchecker accepts
+    /// as a chain of valid single-letter tokens.
+    private static func longestLetterRun(_ s: String) -> Int {
+        var best = 0, current = 0
+        for ch in s {
+            if ch.isLetter { current += 1; best = max(best, current) } else { current = 0 }
+        }
+        return best
     }
 
     // MARK: - Bigram model
