@@ -178,14 +178,18 @@ final class LanguageScorer {
               core.allSatisfy({ $0.isLetter || $0 == "'" || $0 == "’" || $0 == "-" }) else {
             return false
         }
-        // NSSpellChecker splits on internal apostrophes/hyphens and never flags
-        // a lone single letter, so it rubber-stamps "g'l" — the Latin twin of
-        // "пэд", because 'э' sits on the apostrophe key — as a real word, and
-        // the n-gram gibberish net can't help (both are 3 chars, below its
-        // 4-char floor). A genuine word has at least one run of ≥2 consecutive
-        // letters; require it. Kills "g'l" / "a'b" / "v'h" while keeping
-        // "don't", "кто-то", "we're", "it".
-        guard Self.longestLetterRun(core) >= 2 else { return false }
+        // NSSpellChecker tokenizes on internal apostrophes/hyphens and never
+        // flags a lone single letter — it even accepts "ls" — so it rubber-stamps
+        // wrong-layout junk whose Latin twin carries an apostrophe from the «э»
+        // key: "g'l" → пэд, "g'ls" → пэды, "v'h" → мэр. A genuine
+        // contraction/possessive/compound attaches the separator to a
+        // substantial stem, so require the part before the first separator to be
+        // at least two letters. Kills g'l / g'ls / a'b while keeping don't,
+        // we're, кто-то, mother-in-law. (Drops I'm / o'clock, which never take
+        // part in a real wrong-layout conversion anyway.)
+        if let sep = core.firstIndex(where: { $0 == "'" || $0 == "’" || $0 == "-" }) {
+            guard core.distance(from: core.startIndex, to: sep) >= 2 else { return false }
+        }
         // Map plain code to a concrete dictionary if needed ("ru" → "ru", "en" → "en").
         guard hasSpellDictionary(for: language) else { return false }
         let range = spellChecker.checkSpelling(
@@ -197,17 +201,6 @@ final class LanguageScorer {
             wordCount: nil
         )
         return range.location == NSNotFound
-    }
-
-    /// Length of the longest run of consecutive letters in the string. Used to
-    /// reject apostrophe/hyphen-split junk ("g'l") that the spellchecker accepts
-    /// as a chain of valid single-letter tokens.
-    private static func longestLetterRun(_ s: String) -> Int {
-        var best = 0, current = 0
-        for ch in s {
-            if ch.isLetter { current += 1; best = max(best, current) } else { current = 0 }
-        }
-        return best
     }
 
     // MARK: - Bigram model

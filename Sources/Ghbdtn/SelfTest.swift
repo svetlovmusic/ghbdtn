@@ -101,6 +101,9 @@ enum SelfTest {
             // rubber-stamps (it accepts single-letter tokens): "пэд" → "g'l".
             // A real word needs a ≥2-letter run, so it must be kept.
             Case(keys: "g'l", source: ru, expectConvert: false, note: "пэд (real word) → keep, not g'l"),
+            // Same trap one letter longer: 'ls' is a token the spellchecker
+            // accepts, so require a ≥2-letter stem before the apostrophe.
+            Case(keys: "g'ls", source: ru, expectConvert: false, note: "пэды (real word) → keep, not g'ls"),
             // Apostrophe words must still convert via the dictionary layer.
             Case(keys: "don't", source: ru, expectConvert: true, note: "вщтэе → don't (apostrophe allowed)"),
             // A correctly-typed word carrying trailing sentence punctuation
