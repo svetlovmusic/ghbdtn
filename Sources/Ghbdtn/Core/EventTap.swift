@@ -12,7 +12,7 @@ final class EventTap {
     enum TapEvent {
         case key(KeyStroke, hasCommandLikeModifiers: Bool)
         case backspace
-        case wordDelimiter(KeyStroke, Character?) // space / return / punctuation
+        case wordDelimiter(KeyStroke, Character?) // space / return / tab; punctuation is classified by the engine (it needs the active layout)
         case navigationOrClick                    // arrows, clicks — caret moved
         case secureInputActive
     }

@@ -156,6 +156,22 @@ final class AutoSwitchEngine {
                 return
             }
             guard let active = LayoutManager.shared.currentLayout() else { return }
+            // Sentence punctuation ends the word — but only when the key
+            // carries no letter in any enabled layout. Keys like ';' or ','
+            // ARE letters elsewhere (ж, б in Russian) and must stay in the
+            // buffer, otherwise wrong-layout words like ";bpym" fall apart.
+            if let punct = delimiterCharacter(for: stroke, activeLayout: active) {
+                // This keystroke is new input after any prior conversion, so
+                // it closes the immediate-reject window (a later backspace must
+                // not veto the word we converted before it).
+                lastConversionOriginal = nil
+                // Pass the stroke: if the word converts, the delimiter has to be
+                // re-typed as the *target* layout's character (the ABC '/' the
+                // user pressed means Russian '.'), not the source glyph.
+                evaluateCurrentWord(final: true, delimiter: punct, delimiterStroke: stroke)
+                buffer.complete(delimiterChar: punct)
+                return
+            }
             buffer.append(stroke, activeLayoutID: active.id)
             lastConversionOriginal = nil
             if settings.trigger == .live {
@@ -163,15 +179,45 @@ final class AutoSwitchEngine {
             }
 
         case let .wordDelimiter(_, char):
-            // Evaluate the word we just finished, then roll the buffer.
-            evaluateCurrentWord(final: true)
+            // Evaluate the word we just finished, then roll the buffer. Only a
+            // space is re-emitted: it reliably inserts one character in every
+            // context. Return and Tab carry action semantics (submit a chat
+            // message, run a shell line, move focus) about as often as they
+            // insert a character, and we can't tell which — re-typing them
+            // would execute/submit the corrected word or over-delete adjacent
+            // text. So we leave them untouched (delete the word only): safe
+            // everywhere, at the cost that a word finished with Enter in a
+            // multi-line editor can still keep its first letter. Space is the
+            // overwhelmingly common terminator and is fully fixed.
+            evaluateCurrentWord(final: true, delimiter: char == " " ? char : nil)
             buffer.complete(delimiterChar: char)
         }
     }
 
+    /// The character this keystroke contributes as a word boundary, or nil
+    /// when it may be part of a word. A key counts as punctuation only if it
+    /// produces a single punctuation/symbol character in the active layout
+    /// AND no other enabled layout puts a letter on it: the ABC '/' key
+    /// (Russian '.') qualifies, while ';' or ',' do not — they are ж and б
+    /// when the user meant to type Russian.
+    private func delimiterCharacter(for stroke: KeyStroke, activeLayout: KeyboardLayout) -> Character? {
+        let translator = KeyTranslator.shared
+        guard let produced = translator.translate(stroke, layout: activeLayout),
+              produced.count == 1, let ch = produced.first,
+              ch.isPunctuation || ch.isSymbol else { return nil }
+        for layout in layouts where layout.id != activeLayout.id {
+            if let s = translator.translate(stroke, layout: layout),
+               s.contains(where: { $0.isLetter }) {
+                return nil
+            }
+        }
+        return ch
+    }
+
     // MARK: - Decision
 
-    private func evaluateCurrentWord(final: Bool) {
+    private func evaluateCurrentWord(final: Bool, delimiter: Character? = nil,
+                                     delimiterStroke: KeyStroke? = nil) {
         let strokes = buffer.current
         guard strokes.count >= 2 else { return }
         guard let sourceLayoutID = buffer.layoutID,
@@ -189,11 +235,13 @@ final class AutoSwitchEngine {
             isCompleteWord: final
         ) else { return }
 
-        // If the local decision is confident, act. At final-eval time the
-        // delimiter keyDown is still passing through the listen-only tap and
-        // has not reached the app yet, so nothing extra is on screen.
+        // If the local decision is confident, act. The delimiter keyDown that
+        // triggered a final eval reaches the app BEFORE anything we synthesize:
+        // the listen-only tap cannot hold it back, and our events enter the
+        // pipeline at the HID tap, behind it. So the word AND its delimiter
+        // are on screen when our backspaces land — delete and re-type both.
         if decision.confident {
-            apply(decision, reemitDelimiter: nil)
+            apply(decision, reemitDelimiter: delimiter, delimiterStroke: delimiterStroke)
         } else if settings.aiEnabled, final {
             consultAI(strokes: strokes, source: source, fallback: decision)
         }
@@ -201,18 +249,32 @@ final class AutoSwitchEngine {
 
     /// Replace the on-screen wrong word with the corrected text.
     ///
-    /// - Parameter reemitDelimiter: when the word was already terminated on
-    ///   screen (post-hoc conversions: manual hotkey, async AI), pass the
-    ///   delimiter character so it is deleted along with the word and re-typed
-    ///   after the correction. Pass nil for the live path where the delimiter
-    ///   has not landed yet.
-    private func apply(_ decision: Decider.Decision, reemitDelimiter: Character?) {
+    /// - Parameter reemitDelimiter: the delimiter that terminated the word,
+    ///   if any. In every terminated-word path it is on screen (or in flight
+    ///   ahead of our synthetic events) by the time the backspaces arrive, so
+    ///   it must be deleted along with the word and re-typed after the
+    ///   correction. Pass nil only for the live path, where the word has no
+    ///   delimiter yet.
+    /// - Parameter delimiterStroke: when the delimiter is a punctuation key
+    ///   (not a layout-invariant space), the stroke that produced it. Since we
+    ///   are asserting the word was meant for `target`, the delimiter is
+    ///   re-typed as the character that key produces under `target` — the ABC
+    ///   '/' the user pressed becomes Russian '.'.
+    private func apply(_ decision: Decider.Decision, reemitDelimiter: Character?,
+                       delimiterStroke: KeyStroke? = nil) {
         let target = decision.target
         let corrected = decision.correctedText
         let original = decision.originalText
 
+        // On-screen the source glyph occupies one slot; re-type the target one.
+        var reemit = reemitDelimiter
+        if reemitDelimiter != nil, let stroke = delimiterStroke,
+           let s = KeyTranslator.shared.translate(stroke, layout: target),
+           s.count == 1, let c = s.first {
+            reemit = c
+        }
         let deleteCount = original.count + (reemitDelimiter != nil ? 1 : 0)
-        let replacement = corrected + (reemitDelimiter.map(String.init) ?? "")
+        let replacement = corrected + (reemit.map(String.init) ?? "")
         TextInjector.shared.replaceText(
             deleteCount: deleteCount,
             with: replacement,
