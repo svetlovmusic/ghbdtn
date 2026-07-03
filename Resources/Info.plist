@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Ghbdtn</string>
+    <key>CFBundleDisplayName</key>
+    <string>Ghbdtn (Привет)</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.ghbdtn.app</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleExecutable</key>
+    <string>ghbdtn</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <!-- Agent app: lives in the menu bar, no Dock icon. -->
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHumanReadableCopyright</key>
+    <string>Local, private layout switcher.</string>
+    <!-- Microphone usage is for the (future) Whisper voice dictation feature. -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Голосовой ввод (Whisper) использует микрофон для распознавания речи.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>ghbdtn переключает раскладку клавиатуры и исправляет набранный текст.</string>
+</dict>
+</plist>

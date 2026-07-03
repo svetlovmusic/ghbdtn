@@ -1,0 +1,249 @@
+import Foundation
+import AppKit
+
+/// Scores how plausible a string is as real text in a given language.
+///
+/// Two signals are combined:
+///  1. `NSSpellChecker` — authoritative for complete words, supports every
+///     language macOS ships a dictionary for (so the engine is not limited
+///     to the ru/en pair).
+///  2. Character-bigram coverage — cheap statistical signal that also works
+///     for partial words and out-of-vocabulary tokens. English statistics are
+///     built from `/usr/share/dict/words`; other languages learn adaptively
+///     from words the spellchecker accepts, seeded with a built-in Russian
+///     corpus.
+final class LanguageScorer {
+    static let shared = LanguageScorer()
+
+    struct Score {
+        let text: String
+        let language: String
+        /// 0…1: fraction of adjacent letter pairs that are common in the language.
+        let bigramCoverage: Double
+        /// The spellchecker recognizes the exact word.
+        let isDictionaryWord: Bool
+        /// The word is in our curated frequent-words list for the language.
+        /// This is the override for the OS spellchecker's rare false-accepts
+        /// (e.g. it wrongly calls the abracadabra "ghbdtn" a valid English word).
+        let isCommonWord: Bool
+        /// Letters from the language's own script make up the string.
+        let scriptMatch: Bool
+    }
+
+    private var bigrams: [String: Set<String>] = [:]  // language → set of "ab" pairs
+    /// language → curated set of frequent words. Built synchronously in init so
+    /// it is ready before the very first keystroke (unlike the async bigrams).
+    private var commonWords: [String: Set<String>] = [:]
+    private let spellChecker = NSSpellChecker.shared
+    private var spellDocTag: Int = 0
+    private var availableSpellLanguages: Set<String> = []
+    private let queue = DispatchQueue(label: "com.ghbdtn.scorer")
+
+    private init() {
+        spellDocTag = NSSpellChecker.uniqueSpellDocumentTag()
+        availableSpellLanguages = Set(spellChecker.availableLanguages.map {
+            String($0.split(separator: "_").first ?? Substring($0)).lowercased()
+        })
+        commonWords["ru"] = Set(Self.russianSeedWords)
+        commonWords["en"] = Set(Self.englishCommonWords)
+        seedModels()
+    }
+
+    // MARK: - Public
+
+    func score(_ text: String, language: String) -> Score {
+        let lower = text.lowercased()
+        return Score(
+            text: text,
+            language: language,
+            bigramCoverage: bigramCoverage(lower, language: language),
+            isDictionaryWord: isDictionaryWord(text, language: language),
+            isCommonWord: isCommonWord(text, language: language),
+            scriptMatch: scriptMatches(lower, language: language)
+        )
+    }
+
+    /// Is this an exact match in our curated frequent-words list for the language?
+    func isCommonWord(_ word: String, language: String) -> Bool {
+        commonWords[language.lowercased()]?.contains(word.lowercased()) ?? false
+    }
+
+    /// Feed a confirmed-valid word back into the bigram model so coverage of
+    /// languages beyond ru/en improves with use.
+    func learn(word: String, language: String) {
+        let lower = word.lowercased()
+        queue.sync {
+            var set = bigrams[language] ?? []
+            for pair in Self.pairs(of: lower) { set.insert(pair) }
+            bigrams[language] = set
+        }
+    }
+
+    /// Does macOS have a spelling dictionary for this language?
+    func hasSpellDictionary(for language: String) -> Bool {
+        availableSpellLanguages.contains(language.lowercased())
+    }
+
+    // MARK: - Spellcheck
+
+    func isDictionaryWord(_ word: String, language: String) -> Bool {
+        guard word.count >= 2 else { return false }
+        // Map plain code to a concrete dictionary if needed ("ru" → "ru", "en" → "en").
+        guard hasSpellDictionary(for: language) else { return false }
+        let range = spellChecker.checkSpelling(
+            of: word,
+            startingAt: 0,
+            language: language,
+            wrap: false,
+            inSpellDocumentWithTag: spellDocTag,
+            wordCount: nil
+        )
+        return range.location == NSNotFound
+    }
+
+    // MARK: - Bigram model
+
+    private func bigramCoverage(_ text: String, language: String) -> Double {
+        let letters = text.filter { $0.isLetter }
+        guard letters.count >= 2 else { return 0 }
+        let known: Set<String> = queue.sync { bigrams[language] ?? [] }
+        guard !known.isEmpty else { return 0 }
+        let pairs = Self.pairs(of: String(letters))
+        guard !pairs.isEmpty else { return 0 }
+        let hits = pairs.filter { known.contains($0) }.count
+        return Double(hits) / Double(pairs.count)
+    }
+
+    private static func pairs(of text: String) -> [String] {
+        let chars: [Character] = Array(text)
+        guard chars.count >= 2 else { return [] }
+        var result: [String] = []
+        result.reserveCapacity(chars.count - 1)
+        for i in 0..<(chars.count - 1) {
+            result.append(String(chars[i]) + String(chars[i + 1]))
+        }
+        return result
+    }
+
+    // MARK: - Script detection
+
+    private func scriptMatches(_ text: String, language: String) -> Bool {
+        let letters = text.unicodeScalars.filter { CharacterSet.letters.contains($0) }
+        guard !letters.isEmpty else { return false }
+        let matching = letters.filter { Self.script(for: language).contains($0) }
+        return Double(matching.count) / Double(letters.count) > 0.9
+    }
+
+    private static func script(for language: String) -> CharacterSet {
+        switch language {
+        case "ru", "uk", "be", "bg", "sr", "mk", "kk":
+            return CharacterSet(charactersIn: Unicode.Scalar(0x0400)!...Unicode.Scalar(0x04FF)!)
+        case "el":
+            return CharacterSet(charactersIn: Unicode.Scalar(0x0370)!...Unicode.Scalar(0x03FF)!)
+        case "he", "yi":
+            return CharacterSet(charactersIn: Unicode.Scalar(0x0590)!...Unicode.Scalar(0x05FF)!)
+        case "ar", "fa", "ur":
+            return CharacterSet(charactersIn: Unicode.Scalar(0x0600)!...Unicode.Scalar(0x06FF)!)
+        case "hy":
+            return CharacterSet(charactersIn: Unicode.Scalar(0x0530)!...Unicode.Scalar(0x058F)!)
+        case "ka":
+            return CharacterSet(charactersIn: Unicode.Scalar(0x10A0)!...Unicode.Scalar(0x10FF)!)
+        case "th":
+            return CharacterSet(charactersIn: Unicode.Scalar(0x0E00)!...Unicode.Scalar(0x0E7F)!)
+        default:
+            // Latin-script languages, incl. extended Latin (é, ü, ç, ...).
+            var set = CharacterSet(charactersIn: Unicode.Scalar(0x0041)!...Unicode.Scalar(0x007A)!)
+            set.formUnion(CharacterSet(charactersIn: Unicode.Scalar(0x00C0)!...Unicode.Scalar(0x024F)!))
+            return set
+        }
+    }
+
+    // MARK: - Seeding
+
+    private func seedModels() {
+        queue.async { [weak self] in
+            guard let self else { return }
+            var en = Set<String>()
+            // The system word list gives near-complete English bigram coverage.
+            if let words = try? String(contentsOfFile: "/usr/share/dict/words", encoding: .utf8) {
+                for word in words.split(separator: "\n").prefix(120_000) {
+                    for pair in Self.pairs(of: word.lowercased()) { en.insert(pair) }
+                }
+            }
+            var ru = Set<String>()
+            for word in Self.russianSeedWords {
+                for pair in Self.pairs(of: word) { ru.insert(pair) }
+            }
+            self.queue.async {} // no-op; we're already on the queue
+            self.bigrams["en"] = en
+            self.bigrams["ru"] = ru
+            Log.info("Bigram models seeded: en=\(en.count) pairs, ru=\(ru.count) pairs")
+        }
+    }
+
+    /// Frequent Russian words used to seed the Cyrillic bigram model. The
+    /// spellchecker feedback loop (`learn`) extends coverage during use.
+    private static let russianSeedWords: [String] = [
+        "и", "в", "не", "на", "я", "быть", "он", "с", "что", "а", "по", "это",
+        "она", "этот", "к", "но", "они", "мы", "как", "из", "у", "который",
+        "то", "за", "свой", "весь", "год", "от", "так", "о", "для", "ты",
+        "же", "все", "тот", "мочь", "вы", "человек", "такой", "его", "сказать",
+        "только", "или", "еще", "бы", "себя", "один", "как", "уже", "до",
+        "время", "если", "сам", "когда", "другой", "вот", "говорить", "наш",
+        "мой", "знать", "стать", "при", "чтобы", "дело", "жизнь", "кто",
+        "первый", "очень", "два", "день", "ее", "новый", "рука", "даже",
+        "во", "со", "раз", "где", "там", "под", "можно", "ну", "какой",
+        "после", "их", "работа", "без", "самый", "потом", "надо", "хотеть",
+        "ли", "слово", "идти", "большой", "должен", "место", "иметь", "ничего",
+        "сейчас", "тут", "лицо", "друг", "нет", "теперь", "ни", "глаз",
+        "тоже", "тогда", "видеть", "вопрос", "через", "да", "здесь", "дом",
+        "стоять", "думать", "спросить", "человека", "смотреть", "жить", "чем",
+        "мир", "просто", "сила", "конечно", "понять", "почему", "делать",
+        "вдруг", "над", "взять", "никто", "сделать", "дверь", "перед", "нужно",
+        "понимать", "казаться", "голова", "остаться", "куда", "письмо", "несколько",
+        "слышать", "решить", "именно", "начать", "хорошо", "почти", "правда",
+        "земля", "конец", "минута", "любить", "пройти", "больше", "хотя",
+        "всегда", "второй", "страна", "вода", "отец", "лишь", "город", "путь",
+        "деньги", "снова", "лучше", "пока", "мама", "чуть", "утро",
+        "вечер", "ночь", "давно", "маленький", "например", "русский",
+        "привет", "спасибо", "пожалуйста", "здравствуйте", "сегодня", "завтра",
+        "вчера", "сообщение", "написать", "текст", "язык", "клавиатура",
+        "раскладка", "программа", "компьютер", "телефон", "интернет", "почта",
+        "проект", "задача", "встреча", "документ", "файл", "папка", "музыка",
+        "фильм", "книга", "школа", "работать", "учиться", "играть", "читать",
+        "писать", "думаю", "может", "хочу", "буду", "есть", "была", "были",
+        "было", "меня", "тебя", "него", "неё", "нас", "вас", "них", "мне",
+        "тебе", "ему", "ей", "нам", "вам", "им", "мной", "тобой", "собой"
+    ].map { $0.lowercased() }.filter { $0.allSatisfy { ch in ch.isLetter && ("а"..."я" ~= ch || ch == "ё") } }
+
+    /// Frequent English words. Used as the override signal when the OS
+    /// spellchecker false-accepts a wrong-layout string in the *other*
+    /// direction (a Cyrillic abracadabra whose Latin twin is a real word).
+    private static let englishCommonWords: [String] = [
+        "the", "be", "to", "of", "and", "a", "in", "that", "have", "it", "for",
+        "not", "on", "with", "he", "as", "you", "do", "at", "this", "but", "his",
+        "by", "from", "they", "we", "say", "her", "she", "or", "an", "will", "my",
+        "one", "all", "would", "there", "their", "what", "so", "up", "out", "if",
+        "about", "who", "get", "which", "go", "me", "when", "make", "can", "like",
+        "time", "no", "just", "him", "know", "take", "people", "into", "year",
+        "your", "good", "some", "could", "them", "see", "other", "than", "then",
+        "now", "look", "only", "come", "its", "over", "think", "also", "back",
+        "after", "use", "two", "how", "our", "work", "first", "well", "way",
+        "even", "new", "want", "because", "any", "these", "give", "day", "most",
+        "us", "hello", "hi", "hey", "yes", "please", "thanks", "thank", "sorry",
+        "okay", "ok", "today", "tomorrow", "yesterday", "message", "text", "code",
+        "file", "folder", "email", "project", "task", "meeting", "document",
+        "keyboard", "layout", "computer", "phone", "internet", "world", "home",
+        "name", "email", "password", "login", "user", "please", "cool", "nice",
+        "great", "love", "life", "man", "woman", "child", "world", "school",
+        "state", "family", "student", "group", "country", "problem", "hand",
+        "part", "place", "case", "week", "company", "system", "program",
+        "question", "government", "number", "night", "point", "water", "room",
+        "mother", "area", "money", "story", "fact", "month", "lot", "right",
+        "study", "book", "eye", "job", "word", "business", "issue", "side",
+        "kind", "head", "house", "service", "friend", "father", "power", "hour",
+        "game", "line", "end", "member", "car", "city", "community", "read",
+        "write", "play", "run", "move", "live", "believe", "hold", "bring",
+        "happen", "must", "walk", "help", "start", "call", "open", "close"
+    ]
+}
