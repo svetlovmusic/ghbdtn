@@ -55,18 +55,27 @@ fi
 mkdir -p "$APP/Contents/Frameworks"
 cp -R "$WHISPER_FRAMEWORK" "$APP/Contents/Frameworks/"
 
-# Ad-hoc code signature. Accessibility permission is tied to the signature, so
-# a stable signing identity keeps the grant across launches. Ad-hoc re-prompts
-# after each rebuild — for a real release, sign with a Developer ID.
-echo "▸ Signing (ad-hoc)…"
+# Code signature. Accessibility permission is bound to the signature's
+# designated requirement, so the identity must be STABLE across rebuilds or the
+# grant resets every build. A stable self-signed identity ("Ghbdtn Local
+# Signing", created by tools/setup-signing.sh) has a cert-based requirement that
+# never changes; ad-hoc's requirement is the cdhash, which changes every build.
 ENTITLEMENTS="$ROOT/Resources/ghbdtn.entitlements"
 if [ ! -f "$ENTITLEMENTS" ]; then
   echo "✗ Missing entitlements file: $ENTITLEMENTS" >&2
   exit 1
 fi
-# No stderr suppression and no fallback: if signing with entitlements fails we
-# want a loud error, not a silently entitlement-less bundle (set -e aborts).
-codesign --force --deep --sign - --entitlements "$ENTITLEMENTS" "$APP"
+SIGN_IDENTITY="Ghbdtn Local Signing"
+# No stderr suppression and no silent fallback to an entitlement-less bundle:
+# if signing fails we want a loud error (set -e aborts).
+if security find-identity -p codesigning | grep -q "$SIGN_IDENTITY"; then
+  echo "▸ Signing (stable identity: $SIGN_IDENTITY)…"
+  codesign --force --deep --sign "$SIGN_IDENTITY" --entitlements "$ENTITLEMENTS" "$APP"
+else
+  echo "▸ Signing (ad-hoc — run ./tools/setup-signing.sh once so the"
+  echo "  Accessibility grant survives rebuilds)…"
+  codesign --force --deep --sign - --entitlements "$ENTITLEMENTS" "$APP"
+fi
 
 echo "✓ Built $APP"
 
