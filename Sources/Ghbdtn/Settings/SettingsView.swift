@@ -184,12 +184,20 @@ private struct HotkeysTab: View {
             }
             Section("Голосовой ввод (Whisper)") {
                 HStack {
-                    Text("Начать / остановить диктовку")
+                    Text("Начать / распознать и вставить")
                     Spacer()
                     HotkeyRecorder(hotkey: $settings.whisperHotkey)
                         .frame(width: 160, height: 24)
                 }
-                Text("Задел на будущее — движок Whisper пока не реализован.")
+                Text("Первое нажатие показывает панель записи, второе — распознаёт и вставляет текст в позицию курсора.")
+                    .font(.caption).foregroundColor(.secondary)
+                HStack {
+                    Text("Отменить диктовку (без вставки)")
+                    Spacer()
+                    HotkeyRecorder(hotkey: $settings.voiceCancelHotkey, allowsBareKeys: true)
+                        .frame(width: 160, height: 24)
+                }
+                Text("Действует только пока идёт запись — вне диктовки клавиша не перехватывается, поэтому можно назначить просто ⎋ Escape.")
                     .font(.caption).foregroundColor(.secondary)
             }
         }
@@ -231,27 +239,74 @@ private struct AITab: View {
 
 private struct VoiceTab: View {
     @EnvironmentObject var settings: Settings
+    @ObservedObject private var downloads = ModelDownloadManager.shared
+
+    /// "Проверить сейчас" result shown inline.
+    @State private var testResult: String?
+    @State private var testError: String?
+    @State private var isTesting = false
 
     var body: some View {
         Form {
             Section {
                 Toggle("Включить голосовой ввод (Whisper)", isOn: $settings.voiceEnabled)
-                Text("Раздел-задел. Хоткей и права настраиваются уже сейчас, транскрипция появится позже.")
+                Text("Поставьте курсор в любое текстовое поле и нажмите хоткей (или пункт «Диктовка» в меню в трее): появится плавающая панель с волной и таймером. ⏹ отменяет, ✓ (или повторный хоткей) распознаёт и вставляет текст.")
+                    .font(.caption).foregroundColor(.secondary)
+                Picker("Панель записи", selection: $settings.whisperHUDPlacement) {
+                    Text("Рядом с курсором мыши").tag("mouse")
+                    Text("Сверху по центру экрана").tag("top")
+                }
+                Toggle("Копировать распознанный текст в буфер обмена",
+                       isOn: $settings.whisperCopyToClipboard)
+                Text("Страховка: если текст не вставился в поле, нажмите ⌘V — он остаётся в буфере. Прежнее содержимое буфера при этом заменяется.")
                     .font(.caption).foregroundColor(.secondary)
             }
+
             Section("Движок") {
                 Picker("Движок Whisper", selection: $settings.voiceEngine) {
                     Text("Локальный (офлайн)").tag("local")
-                    Text("Облачный (OpenAI)").tag("cloud")
+                    Text("Облачный (OpenAI-совместимый)").tag("cloud")
                 }
                 .pickerStyle(.radioGroup)
+
                 if settings.voiceEngine == "local" {
-                    Text("Модель whisper.cpp / CoreML будет загружаться из Application Support.")
-                        .font(.caption).foregroundColor(.secondary)
+                    localModelRows
                 } else {
-                    Text("Использует тот же API-ключ, что и ИИ-слой (эндпоинт /audio/transcriptions).")
+                    cloudRows
+                }
+
+                Picker("Язык речи", selection: $settings.whisperLanguage) {
+                    Text("Авто").tag("auto")
+                    Text("Русский").tag("ru")
+                    Text("English").tag("en")
+                }
+            }
+
+            Section("Проверка") {
+                HStack {
+                    Button {
+                        runTest()
+                    } label: {
+                        Label(isTesting ? "Идёт запись — нажмите ✓ на панели" : "Проверить сейчас",
+                              systemImage: "mic.badge.plus")
+                    }
+                    .disabled(isTesting)
+                    Spacer()
+                }
+                if let testResult {
+                    Text("«\(testResult)»")
+                        .textSelection(.enabled)
+                    Text("Распозналось плохо? Переключите движок выше и проверьте снова.")
                         .font(.caption).foregroundColor(.secondary)
                 }
+                if let testError {
+                    Text(testError).font(.caption).foregroundColor(.red)
+                }
+                Text("Результат появится здесь, а не в тексте — удобно сравнивать локальный и облачный движки.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
+            Section {
                 Button("Запросить доступ к микрофону") {
                     DictationController.shared.requestMicrophoneAccessIfNeeded()
                 }
@@ -259,5 +314,93 @@ private struct VoiceTab: View {
         }
         .formStyle(.grouped)
         .padding()
+    }
+
+    // MARK: Local model management
+
+    @ViewBuilder
+    private var localModelRows: some View {
+        Picker("Модель", selection: $settings.whisperModel) {
+            ForEach(ModelDownloadManager.catalog) { model in
+                Text("\(model.title) · \(model.sizeLabel) — \(model.note)").tag(model.id)
+            }
+        }
+
+        if let info = ModelDownloadManager.info(for: settings.whisperModel) {
+            // Re-evaluated after every (un)install: installedRevision is
+            // @Published, so its bump re-renders this body.
+            let installed = downloads.installedURL(for: info.id) != nil
+            HStack {
+                if downloads.activeDownloadID == info.id {
+                    ProgressView(value: downloads.progress)
+                        .frame(maxWidth: 220)
+                    Text("\(Int(downloads.progress * 100))%")
+                        .font(.caption).monospacedDigit()
+                    Button("Отмена") { downloads.cancelDownload() }
+                } else if installed {
+                    Label("Модель установлена", systemImage: "checkmark.circle.fill")
+                        .foregroundColor(.green)
+                    Spacer()
+                    Button("Удалить") { downloads.delete(info) }
+                } else {
+                    Label("Модель не скачана", systemImage: "arrow.down.circle")
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Button("Скачать (\(info.sizeLabel))") { downloads.download(info) }
+                        .disabled(downloads.activeDownloadID != nil)
+                }
+            }
+            if let error = downloads.lastError {
+                Text(error).font(.caption).foregroundColor(.red)
+            }
+            Text("Скачивается с huggingface.co (ggerganov/whisper.cpp) в Application Support, проверяется по SHA-256. Распознавание при этом полностью офлайн.")
+                .font(.caption).foregroundColor(.secondary)
+        }
+    }
+
+    // MARK: Cloud engine config
+
+    @ViewBuilder
+    private var cloudRows: some View {
+        TextField("Base URL", text: $settings.whisperCloudBaseURL)
+            .textFieldStyle(.roundedBorder)
+        TextField("Модель", text: $settings.whisperCloudModel)
+            .textFieldStyle(.roundedBorder)
+        SecureField("API-ключ (пусто — ключ ИИ-слоя, если Base URL совпадает с ним)",
+                    text: $settings.whisperCloudAPIKey)
+            .textFieldStyle(.roundedBorder)
+        HStack {
+            Text("Пресеты:").font(.caption).foregroundColor(.secondary)
+            Button("OpenAI") {
+                settings.whisperCloudBaseURL = "https://api.openai.com/v1"
+                settings.whisperCloudModel = "gpt-4o-transcribe"
+            }
+            Button("Groq (дёшево, те же веса)") {
+                settings.whisperCloudBaseURL = "https://api.groq.com/openai/v1"
+                settings.whisperCloudModel = "whisper-large-v3-turbo"
+            }
+        }
+        .controlSize(.small)
+        Text("Внимание: аудио диктовки уходит на сервер провайдера. Ключ хранится в Keychain.")
+            .font(.caption).foregroundColor(.secondary)
+    }
+
+    // MARK: Test flow
+
+    private func runTest() {
+        testResult = nil
+        testError = nil
+        isTesting = true
+        DictationController.shared.beginTest { result in
+            isTesting = false
+            switch result {
+            case .success(let text):
+                testResult = text.isEmpty ? "(тишина — ничего не распозналось)" : text
+            case .failure(let error) where error is CancellationError:
+                break // user hit ⏹ — nothing to report
+            case .failure(let error):
+                testError = error.localizedDescription
+            }
+        }
     }
 }

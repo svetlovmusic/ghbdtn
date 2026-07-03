@@ -10,6 +10,9 @@ final class HotkeyCenter {
     enum Action: UInt32 {
         case manualConvert = 1
         case voiceDictation = 2
+        /// Registered only while a dictation session is live (it may be a
+        /// bare key like Escape — must never be captured globally).
+        case voiceCancel = 3
     }
 
     private var handlers: [Action: () -> Void] = [:]
@@ -49,7 +52,7 @@ final class HotkeyCenter {
             UnregisterEventHotKey(existing)
             registered[action] = nil
         }
-        guard hotkey.enabled, hotkey.keyCode != 0 || hotkey.modifiers != 0 else { return }
+        guard hotkey.enabled, !(hotkey.keyCode == 0 && hotkey.modifiers == 0) else { return }
 
         let hotKeyID = EventHotKeyID(signature: OSType(0x47484244), id: action.rawValue) // 'GHBD'
         var ref: EventHotKeyRef?
@@ -59,6 +62,13 @@ final class HotkeyCenter {
             registered[action] = ref
         } else {
             Log.error("RegisterEventHotKey failed for \(action): \(status)")
+        }
+    }
+
+    func unregister(_ action: Action) {
+        if let ref = registered[action] {
+            UnregisterEventHotKey(ref)
+            registered[action] = nil
         }
     }
 

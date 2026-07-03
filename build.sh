@@ -22,6 +22,9 @@ APP_NAME="ghbdtn"
 BUILD_DIR="$ROOT/.build/$CONFIG"
 APP="$ROOT/$APP_NAME.app"
 
+# whisper.cpp XCFramework (local binaryTarget) — fetched once, cached.
+"$ROOT/tools/fetch-whisper.sh"
+
 echo "▸ Building ($CONFIG)…"
 swift build -c "$CONFIG"
 
@@ -41,6 +44,16 @@ if [ ! -d "$RESOURCE_BUNDLE" ]; then
   exit 1
 fi
 cp -R "$RESOURCE_BUNDLE" "$APP/Contents/Resources/"
+
+# whisper.framework is a dynamic library; the executable links it via
+# @rpath = @executable_path/../Frameworks (see Package.swift linker flags).
+WHISPER_FRAMEWORK="$ROOT/Vendor/whisper.xcframework/macos-arm64_x86_64/whisper.framework"
+if [ ! -d "$WHISPER_FRAMEWORK" ]; then
+  echo "✗ Missing $WHISPER_FRAMEWORK (run tools/fetch-whisper.sh)" >&2
+  exit 1
+fi
+mkdir -p "$APP/Contents/Frameworks"
+cp -R "$WHISPER_FRAMEWORK" "$APP/Contents/Frameworks/"
 
 # Ad-hoc code signature. Accessibility permission is tied to the signature, so
 # a stable signing identity keeps the grant across launches. Ad-hoc re-prompts

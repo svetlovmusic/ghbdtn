@@ -16,8 +16,9 @@
     <string>APPL</string>
     <key>CFBundleExecutable</key>
     <string>ghbdtn</string>
+    <!-- 13.3: deployment floor of the bundled whisper.cpp dylib. -->
     <key>LSMinimumSystemVersion</key>
-    <string>13.0</string>
+    <string>13.3</string>
     <!-- Agent app: lives in the menu bar, no Dock icon. -->
     <key>LSUIElement</key>
     <true/>

@@ -7,6 +7,9 @@ Package.resolved
 ghbdtn.app/
 *.app/
 
+# Prebuilt whisper.cpp XCFramework (fetched by tools/fetch-whisper.sh)
+Vendor/
+
 # Xcode
 *.xcodeproj/
 DerivedData/
