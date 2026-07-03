@@ -137,9 +137,57 @@ enum SelfTest {
         }
         print("\n\(pass)/\(cases.count) passed")
 
+        let learnOK = runLearningTests(layouts: layouts)
+
         measureLatency()
         let voiceOK = voicePipelineChecks()
-        return pass == cases.count && voiceOK
+        return pass == cases.count && learnOK && voiceOK
+    }
+
+    // MARK: - Adaptive learning
+
+    /// Exercises the LearnedStore end-to-end through the real Decider: forced
+    /// conversions teach positive words, rejections teach keep-words, and both
+    /// only take effect after `activationCount` repeats. Runs in-memory
+    /// (LanguageScorer.persistLearning is false under --selftest).
+    private static func runLearningTests(layouts: [KeyboardLayout]) -> Bool {
+        guard let en = layouts.first(where: { ($0.primaryLanguage ?? "") == "en" || $0.id.contains("ABC") }),
+              let ru = layouts.first(where: { ($0.primaryLanguage ?? "") == "ru" }) else { return true }
+        let scorer = LanguageScorer.shared
+        var pass = 0, total = 0
+        func check(_ cond: Bool, _ desc: String) {
+            total += 1; if cond { pass += 1 }
+            print("\(cond ? "✅" : "❌") [learn] \(desc)")
+        }
+        func converts(_ keys: String, _ src: KeyboardLayout) -> Bool {
+            Decider.decide(strokes: strokes(for: keys), source: src,
+                           candidates: layouts, sensitivity: .balanced)?.confident == true
+        }
+        print("\n-- Adaptive learning (threshold \(LearnedStore.activationCount)) --")
+
+        // Positive: a name the n-gram finds implausible ("juno", pct≈0.06).
+        check(!converts("juno", ru), "before: огтщ kept (juno unknown)")
+        scorer.learnPositive(word: "juno", language: "en")
+        check(!converts("juno", ru), "after 1× force: still kept")
+        scorer.learnPositive(word: "juno", language: "en")
+        check(converts("juno", ru), "after 2× force: огтщ → juno converts")
+
+        // Positive short loanword below the n-gram 4-char floor: "пэд".
+        check(!converts("g'l", en), "before: g'l kept (пэд has no signal)")
+        scorer.learnPositive(word: "пэд", language: "ru")
+        scorer.learnPositive(word: "пэд", language: "ru")
+        check(converts("g'l", en), "after 2× force: g'l → пэд converts")
+        check(!converts("g'l", ru), "learned пэд kept when typed in RU")
+
+        // Negative: "fylhtq"(en) → андрей converts by default; reject 2× → keep.
+        check(converts("fylhtq", en), "before: fylhtq → андрей converts")
+        scorer.learnNegative(word: "fylhtq", language: "en")
+        check(converts("fylhtq", en), "after 1× reject: still converts")
+        scorer.learnNegative(word: "fylhtq", language: "en")
+        check(!converts("fylhtq", en), "after 2× reject: fylhtq kept")
+
+        print("\(pass)/\(total) learning checks passed")
+        return pass == total
     }
 
     // MARK: - Voice pipeline (dictation) sanity
@@ -208,11 +256,11 @@ enum SelfTest {
         let scorer = LanguageScorer.shared
         let srcLang = source.primaryLanguage ?? "en"
         let t = scorer.score(asTyped, language: srcLang, completeWord: complete)
-        print("     typed \(asTyped)[\(srcLang)]: dict=\(t.isDictionaryWord) common=\(t.isCommonWord) ngramP=\(t.ngramPercentile.map { String(format: "%.4f", $0) } ?? "nil") foreign=\(t.ngramForeign)")
+        print("     typed \(asTyped)[\(srcLang)]: dict=\(t.isDictionaryWord) common=\(t.isCommonWord) learned=\(t.isLearnedWord) keep=\(t.isKeepWord) ngramP=\(t.ngramPercentile.map { String(format: "%.4f", $0) } ?? "nil") foreign=\(t.ngramForeign)")
         if let d = decision {
             let lang = d.target.primaryLanguage ?? "?"
             let c = scorer.score(d.correctedText, language: lang, completeWord: complete)
-            print("     cand  \(d.correctedText)[\(lang)]: dict=\(c.isDictionaryWord) common=\(c.isCommonWord) ngramP=\(c.ngramPercentile.map { String(format: "%.4f", $0) } ?? "nil") foreign=\(c.ngramForeign)")
+            print("     cand  \(d.correctedText)[\(lang)]: dict=\(c.isDictionaryWord) common=\(c.isCommonWord) learned=\(c.isLearnedWord) keep=\(c.isKeepWord) ngramP=\(c.ngramPercentile.map { String(format: "%.4f", $0) } ?? "nil") foreign=\(c.ngramForeign)")
         }
     }
 

@@ -44,6 +44,11 @@ enum Decider {
         let sourceLang = source.primaryLanguage ?? "en"
         let typedScore = scorer.score(asTyped, language: sourceLang, completeWord: isCompleteWord)
 
+        // The user has repeatedly rejected converting this exact word in this
+        // layout (adaptive negative learning) — never auto-convert it. The
+        // manual hotkey (force) can still override.
+        if !force, typedScore.isKeepWord { return nil }
+
         // Evaluate every *other* enabled layout as a possible intended target.
         var best: (layout: KeyboardLayout, score: LanguageScorer.Score, text: String)?
         for candidate in candidates where candidate.id != source.id {
@@ -94,10 +99,17 @@ enum Decider {
     private static func rank(_ s: LanguageScorer.Score) -> Double {
         var r = 0.0
         if s.scriptMatch { r += 1.0 }
-        if s.isCommonWord { r += 8.0 }
+        if isKnownWord(s) { r += 8.0 }
         if s.isDictionaryWord { r += 10.0 }
         r += 2.0 * (s.ngramPercentile ?? 0.0)
         return r
+    }
+
+    /// A word the top curated/learned layer vouches for: either the built-in
+    /// frequent-words list or one the user taught the engine (LearnedStore).
+    /// Both are trusted equally and above the OS dictionary's judgement.
+    private static func isKnownWord(_ s: LanguageScorer.Score) -> Bool {
+        s.isCommonWord || s.isLearnedWord
     }
 
     /// The core heuristic, layered by reliability:
@@ -117,12 +129,12 @@ enum Decider {
         // otherwise "converting" produces nonsense.
         guard candidate.scriptMatch else { return false }
 
-        if candidate.isCommonWord && !typed.isCommonWord {
+        if isKnownWord(candidate) && !isKnownWord(typed) {
             return true
         }
-        // A curated common word typed as-is is trusted unconditionally —
+        // A curated or user-learned word typed as-is is trusted unconditionally —
         // never second-guess it with weaker signals.
-        if typed.isCommonWord { return false }
+        if isKnownWord(typed) { return false }
 
         switch sensitivity {
         case .cautious:
@@ -138,9 +150,9 @@ enum Decider {
         case .aggressive:
             if candidate.isDictionaryWord && !typed.isDictionaryWord { return true }
             // Both are valid dictionary words: prefer the candidate when it is
-            // also a curated common word (rarely both — this nudges ambiguous
+            // also a curated/learned word (rarely both — this nudges ambiguous
             // cases toward the more-likely-intended word).
-            if candidate.isDictionaryWord && candidate.isCommonWord { return true }
+            if candidate.isDictionaryWord && isKnownWord(candidate) { return true }
         }
 
         return ngramConfident(typed: typed, candidate: candidate,

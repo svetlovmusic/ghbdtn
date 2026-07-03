@@ -13,6 +13,9 @@ import AppKit
 ///     from words the spellchecker accepts, seeded with a built-in Russian
 ///     corpus.
 final class LanguageScorer {
+    /// Set to false before the singleton is first touched (by `--selftest`) so
+    /// the learned-words store runs in-memory and never touches the user's file.
+    static var persistLearning = true
     static let shared = LanguageScorer()
 
     struct Score {
@@ -37,6 +40,12 @@ final class LanguageScorer {
         /// language's alphabet doesn't have (e.g. ";bpym" for English) — by
         /// definition it is not a word of this language.
         let ngramForeign: Bool
+        /// The user has taught the engine this word via repeated forced
+        /// conversions (LearnedStore). Treated like a curated common word.
+        let isLearnedWord: Bool
+        /// The user has repeatedly rejected auto-converting this word (backspace
+        /// after an auto-conversion) — it must be kept in its layout.
+        let isKeepWord: Bool
     }
 
     private var bigrams: [String: Set<String>] = [:]  // language → set of "ab" pairs
@@ -47,12 +56,15 @@ final class LanguageScorer {
     /// Until a model is loaded, Score.ngramPercentile stays nil and the
     /// Decider's n-gram layer simply abstains.
     private var ngramModels: [String: NgramModel] = [:]
+    /// Adaptive per-language memory of the user's own corrections.
+    private let learned: LearnedStore
     private let spellChecker = NSSpellChecker.shared
     private var spellDocTag: Int = 0
     private var availableSpellLanguages: Set<String> = []
     private let queue = DispatchQueue(label: "com.ghbdtn.scorer")
 
     private init() {
+        learned = LearnedStore(persistent: Self.persistLearning)
         spellDocTag = NSSpellChecker.uniqueSpellDocumentTag()
         availableSpellLanguages = Set(spellChecker.availableLanguages.map {
             String($0.split(separator: "_").first ?? Substring($0)).lowercased()
@@ -79,8 +91,45 @@ final class LanguageScorer {
             isCommonWord: isCommonWord(text, language: language),
             scriptMatch: scriptMatches(lower, language: language),
             ngramPercentile: model?.percentile(of: lower, complete: completeWord),
-            ngramForeign: model?.hasForeignCharacters(lower) ?? false
+            ngramForeign: model?.hasForeignCharacters(lower) ?? false,
+            isLearnedWord: learned.isLearned(lower, language: lang),
+            isKeepWord: learned.isKeep(lower, language: lang)
         )
+    }
+
+    // MARK: - Adaptive learning
+
+    /// Remember a word the user *forced* the engine to produce (manual hotkey).
+    /// After `LearnedStore.activationCount` repeats it is treated like a curated
+    /// common word: the engine converts toward it and keeps it when typed
+    /// correctly. Only clean, script-consistent words are stored, so wrong-layout
+    /// junk (the source side of a conversion) can never poison the store.
+    func learnPositive(word: String, language: String) {
+        guard isCleanWord(word, language: language) else { return }
+        learned.learnPositive(word, language: language)
+    }
+
+    /// Remember that the user rejected auto-converting this word (it must be kept
+    /// in the layout it was typed in). Same cleanliness guard as `learnPositive`.
+    func learnNegative(word: String, language: String) {
+        guard isCleanWord(word, language: language) else { return }
+        learned.learnNegative(word, language: language)
+    }
+
+    /// Diagnostic accessor for the self-test.
+    func learnedCount(word: String, language: String, positive: Bool) -> Int {
+        learned.rawCount(word, language: language, positive: positive)
+    }
+
+    /// A word worth storing: ≥2 letters, only letters plus internal
+    /// apostrophes/hyphens, and written in the language's own script.
+    private func isCleanWord(_ word: String, language: String) -> Bool {
+        let lower = word.lowercased()
+        guard lower.filter({ $0.isLetter }).count >= 2,
+              lower.allSatisfy({ $0.isLetter || $0 == "'" || $0 == "’" || $0 == "-" }) else {
+            return false
+        }
+        return scriptMatches(lower, language: language)
     }
 
     /// Is the character 4-gram model for this language loaded yet?

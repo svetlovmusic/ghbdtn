@@ -8,6 +8,8 @@ import AppKit
 // Headless self-test for the detection logic: `ghbdtn --selftest`.
 // Exits non-zero when any case fails, so it can gate commits/CI.
 if CommandLine.arguments.contains("--selftest") {
+    // Keep learned-word tests in-memory: never read or write the user's file.
+    LanguageScorer.persistLearning = false
     exit(SelfTest.run() ? 0 : 1)
 }
 
