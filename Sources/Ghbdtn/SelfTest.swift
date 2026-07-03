@@ -16,7 +16,10 @@ enum SelfTest {
         // Punctuation keys that carry Cyrillic letters in the Russian layout
         // (ж э б ю х ъ). Words containing them show up with punctuation chars
         // when typed in the wrong layout — e.g. "жизнь" appears as ";bpym".
-        ";": 0x29, "'": 0x27, ",": 0x2B, ".": 0x2F, "[": 0x21, "]": 0x1E
+        ";": 0x29, "'": 0x27, ",": 0x2B, ".": 0x2F, "[": 0x21, "]": 0x1E,
+        // The ABC '/' key — carries no letter in either layout; it is the
+        // Russian '.' and must never end up inside a converted word.
+        "/": 0x2C
     ]
 
     static func strokes(for keys: String) -> [KeyStroke] {
@@ -86,6 +89,19 @@ enum SelfTest {
             Case(keys: "cvepb", source: ru, expectConvert: false,   note: "смузи (OOV loanword) typed correctly → keep"),
             Case(keys: "sdfgsdfg", source: en, expectConvert: false, note: "keyboard mash → keep"),
             Case(keys: "brandon", source: en, expectConvert: false, note: "brandon typed correctly → keep"),
+
+            // -- Issue #1: a real Russian word must not become punctuation
+            //    junk — ",l" / ",l/" are not English words, whatever the OS
+            //    spellchecker's tokenizer thinks.
+            Case(keys: ",l", source: ru, expectConvert: false, note: "бд (real word) → keep, not ,l"),
+            Case(keys: ",l/", source: ru, expectConvert: false, note: "бд. → keep, not ,l/"),
+            // Apostrophe words must still convert via the dictionary layer.
+            Case(keys: "don't", source: ru, expectConvert: true, note: "вщтэе → don't (apostrophe allowed)"),
+            // A correctly-typed word carrying trailing sentence punctuation
+            // (the '.' key is 'ю' in Russian, so it stays in the buffer) must
+            // not read as junk and flip to the other layout: "it." → шею.
+            Case(keys: "it.", source: en, expectConvert: false, note: "it. (real word + period) → keep, not шею"),
+            Case(keys: "at.", source: en, expectConvert: false, note: "at. → keep, not фею"),
 
             // -- Mid-word (live-trigger) evaluation on word prefixes.
             Case(keys: "ghjuhfvvb", source: en, expectConvert: true, complete: false,

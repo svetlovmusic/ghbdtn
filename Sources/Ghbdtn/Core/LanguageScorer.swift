@@ -113,10 +113,26 @@ final class LanguageScorer {
 
     func isDictionaryWord(_ word: String, language: String) -> Bool {
         guard word.count >= 2 else { return false }
+        // NSSpellChecker tokenizes its input, so it reports ",l/" and "it."
+        // both "clean": it just skips the punctuation. That means it can't be
+        // trusted to tell a real word from wrong-layout junk that merely
+        // contains punctuation. Judge the alphabetic core instead — strip
+        // leading/trailing non-letters (sentence punctuation rides into the
+        // buffer on keys that carry a letter in another layout: RU '.' is 'ю')
+        // and require what remains to be a genuine word: letters plus internal
+        // apostrophes/hyphens (don't, кто-то), at least two characters.
+        //   ",l/"  → core "l"    → too short → not a word (fixes бд → ,l/)
+        //   "it."  → core "it"   → real word → blocks it. → шею
+        //   "don't"→ core "don't"→ real word
+        let core = word.trimmingCharacters(in: CharacterSet.letters.inverted)
+        guard core.count >= 2,
+              core.allSatisfy({ $0.isLetter || $0 == "'" || $0 == "’" || $0 == "-" }) else {
+            return false
+        }
         // Map plain code to a concrete dictionary if needed ("ru" → "ru", "en" → "en").
         guard hasSpellDictionary(for: language) else { return false }
         let range = spellChecker.checkSpelling(
-            of: word,
+            of: core,
             startingAt: 0,
             language: language,
             wrap: false,
