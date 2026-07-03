@@ -77,6 +77,47 @@ final class TextInjector {
         stampAndPost(up)
     }
 
+    // MARK: - Pasteboard-based insertion
+
+    /// The one scheduled clipboard restore, cancellable so overlapping
+    /// paste/convert operations can't restore a stale snapshot over a newer
+    /// pasteboard write. Main-thread only.
+    private var pendingRestore: DispatchWorkItem?
+
+    /// Paste `text` at the caret via the clipboard (⌘V), preserving the
+    /// user's pasteboard contents. Used for dictation output: one atomic
+    /// paste is far more reliable for long/multilingual text than hundreds of
+    /// synthetic key events (which slow apps can drop or reorder).
+    func paste(_ text: String) {
+        let pasteboard = NSPasteboard.general
+        pendingRestore?.cancel()
+        let savedItems = Self.snapshot(of: pasteboard)
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        let ourWrite = pasteboard.changeCount
+        postKey(keyCode: keyCode(for: "v"), flags: .maskCommand)
+        scheduleRestore(pasteboard: pasteboard, items: savedItems, ourChangeCount: ourWrite)
+    }
+
+    /// Restore the user's clipboard after the frontmost app has had time to
+    /// service the paste. There is no API to observe "paste consumed", so the
+    /// grace period errs long (slow apps read the pasteboard lazily); the
+    /// restore is skipped when someone else wrote to the clipboard meanwhile
+    /// (pasting itself never bumps `changeCount`).
+    private func scheduleRestore(pasteboard: NSPasteboard, items: [NSPasteboardItem],
+                                 ourChangeCount: Int, delay: TimeInterval = 0.8,
+                                 completion: (() -> Void)? = nil) {
+        let work = DispatchWorkItem { [weak self] in
+            self?.pendingRestore = nil
+            if pasteboard.changeCount == ourChangeCount {
+                Self.restore(pasteboard: pasteboard, items: items)
+            }
+            completion?()
+        }
+        pendingRestore = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
     // MARK: - Selection conversion (manual hotkey on selected text)
 
     /// Convert the currently selected text between two layouts using the
@@ -84,18 +125,11 @@ final class TextInjector {
     func convertSelection(from source: KeyboardLayout, to target: KeyboardLayout,
                           completion: @escaping (Bool) -> Void) {
         let pasteboard = NSPasteboard.general
-        let savedItems = pasteboard.pasteboardItems?.compactMap { item -> NSPasteboardItem? in
-            let copy = NSPasteboardItem()
-            for type in item.types {
-                if let data = item.data(forType: type) {
-                    copy.setData(data, forType: type)
-                }
-            }
-            return copy
-        } ?? []
+        pendingRestore?.cancel()
+        let savedItems = Self.snapshot(of: pasteboard)
         let changeCountBefore = pasteboard.changeCount
 
-        postKey(keyCode: UInt16(kVK_ANSI_C), flags: .maskCommand)
+        postKey(keyCode: keyCode(for: "c"), flags: .maskCommand)
 
         // Give the frontmost app time to service the copy.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
@@ -110,14 +144,38 @@ final class TextInjector {
             let converted = KeyTranslator.shared.convert(selected, from: source, to: target)
             pasteboard.clearContents()
             pasteboard.setString(converted, forType: .string)
-            self.postKey(keyCode: UInt16(kVK_ANSI_V), flags: .maskCommand)
-
-            // Restore the user's clipboard after the paste lands.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                Self.restore(pasteboard: pasteboard, items: savedItems)
+            let ourWrite = pasteboard.changeCount
+            self.postKey(keyCode: self.keyCode(for: "v"), flags: .maskCommand)
+            self.scheduleRestore(pasteboard: pasteboard, items: savedItems,
+                                 ourChangeCount: ourWrite) {
                 completion(true)
             }
         }
+    }
+
+    /// Keycode that produces `char` under the CURRENT layout, so synthetic
+    /// ⌘V/⌘C reach the target app as the right shortcut on remapped Latin
+    /// layouts (Dvorak, Colemak). Non-Latin layouts (Russian, …) have no such
+    /// key — there the ANSI position is correct, since their ⌘-plane emits
+    /// QWERTY Latin.
+    private func keyCode(for char: Character) -> UInt16 {
+        guard let layout = LayoutManager.shared.currentLayout(),
+              let stroke = KeyTranslator.shared.reverseMap(for: layout)[char] else {
+            return char == "c" ? UInt16(kVK_ANSI_C) : UInt16(kVK_ANSI_V)
+        }
+        return stroke.keyCode
+    }
+
+    private static func snapshot(of pasteboard: NSPasteboard) -> [NSPasteboardItem] {
+        pasteboard.pasteboardItems?.compactMap { item -> NSPasteboardItem? in
+            let copy = NSPasteboardItem()
+            for type in item.types {
+                if let data = item.data(forType: type) {
+                    copy.setData(data, forType: type)
+                }
+            }
+            return copy
+        } ?? []
     }
 
     private static func restore(pasteboard: NSPasteboard, items: [NSPasteboardItem]) {
