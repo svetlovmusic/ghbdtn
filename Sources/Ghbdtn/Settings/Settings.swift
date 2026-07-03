@@ -119,9 +119,18 @@ final class Settings: ObservableObject {
     /// Not persisted to defaults — mirrored from Keychain.
     @Published var aiAPIKey: String
 
-    // MARK: Voice (Whisper) — scaffold only
+    // MARK: Voice (Whisper)
     @Published var voiceEnabled: Bool
     @Published var voiceEngine: String // "local" | "cloud"
+    /// GGML model id from ModelDownloadManager.catalog (local engine).
+    @Published var whisperModel: String
+    /// ISO-639-1 speech language ("ru", "en") or "auto".
+    @Published var whisperLanguage: String
+    /// Cloud transcription endpoint (OpenAI-compatible /audio/transcriptions).
+    @Published var whisperCloudBaseURL: String
+    @Published var whisperCloudModel: String
+    /// Keychain-backed; empty = fall back to the AI-layer key.
+    @Published var whisperCloudAPIKey: String
 
     private init() {
         isLoading = true
@@ -138,7 +147,11 @@ final class Settings: ObservableObject {
             Keys.aiModel: "gpt-4o-mini",
             Keys.aiOnlyWhenUncertain: true,
             Keys.voiceEnabled: false,
-            Keys.voiceEngine: "local"
+            Keys.voiceEngine: "local",
+            Keys.whisperModel: "large-v3-turbo-q5_0",
+            Keys.whisperLanguage: "auto",
+            Keys.whisperCloudBaseURL: "https://api.openai.com/v1",
+            Keys.whisperCloudModel: "gpt-4o-transcribe"
         ])
 
         autoSwitchEnabled = defaults.bool(forKey: Keys.autoSwitchEnabled)
@@ -153,7 +166,7 @@ final class Settings: ObservableObject {
         manualConvertHotkey = Settings.decodeHotkey(defaults.data(forKey: Keys.manualConvertHotkey))
             ?? Hotkey(keyCode: 0x31, modifiers: UInt32(controlKeyMask | optionKeyMask), enabled: true) // ⌃⌥Space
         whisperHotkey = Settings.decodeHotkey(defaults.data(forKey: Keys.whisperHotkey))
-            ?? Hotkey(keyCode: 0x09, modifiers: UInt32(controlKeyMask | optionKeyMask), enabled: false) // ⌃⌥V
+            ?? Hotkey(keyCode: 0x09, modifiers: UInt32(controlKeyMask | optionKeyMask), enabled: true) // ⌃⌥V
 
         aiEnabled = defaults.bool(forKey: Keys.aiEnabled)
         aiBaseURL = defaults.string(forKey: Keys.aiBaseURL) ?? "https://api.openai.com/v1"
@@ -163,6 +176,11 @@ final class Settings: ObservableObject {
 
         voiceEnabled = defaults.bool(forKey: Keys.voiceEnabled)
         voiceEngine = defaults.string(forKey: Keys.voiceEngine) ?? "local"
+        whisperModel = defaults.string(forKey: Keys.whisperModel) ?? "large-v3-turbo-q5_0"
+        whisperLanguage = defaults.string(forKey: Keys.whisperLanguage) ?? "auto"
+        whisperCloudBaseURL = defaults.string(forKey: Keys.whisperCloudBaseURL) ?? "https://api.openai.com/v1"
+        whisperCloudModel = defaults.string(forKey: Keys.whisperCloudModel) ?? "gpt-4o-transcribe"
+        whisperCloudAPIKey = Keychain.get(account: "whisper-api-key") ?? ""
 
         isLoading = false
         wireUp()
@@ -196,6 +214,11 @@ final class Settings: ObservableObject {
         persist($aiAPIKey) { Keychain.set($0, account: "ai-api-key") }
         persist($voiceEnabled) { self.defaults.set($0, forKey: Keys.voiceEnabled) }
         persist($voiceEngine) { self.defaults.set($0, forKey: Keys.voiceEngine) }
+        persist($whisperModel) { self.defaults.set($0, forKey: Keys.whisperModel) }
+        persist($whisperLanguage) { self.defaults.set($0, forKey: Keys.whisperLanguage) }
+        persist($whisperCloudBaseURL) { self.defaults.set($0, forKey: Keys.whisperCloudBaseURL) }
+        persist($whisperCloudModel) { self.defaults.set($0, forKey: Keys.whisperCloudModel) }
+        persist($whisperCloudAPIKey) { Keychain.set($0, account: "whisper-api-key") }
     }
 
     // MARK: - Helpers
@@ -231,6 +254,10 @@ final class Settings: ObservableObject {
         static let aiOnlyWhenUncertain = "aiOnlyWhenUncertain"
         static let voiceEnabled = "voiceEnabled"
         static let voiceEngine = "voiceEngine"
+        static let whisperModel = "whisperModel"
+        static let whisperLanguage = "whisperLanguage"
+        static let whisperCloudBaseURL = "whisperCloudBaseURL"
+        static let whisperCloudModel = "whisperCloudModel"
     }
 }
 

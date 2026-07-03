@@ -1,4 +1,5 @@
 import Foundation
+import whisper
 
 /// Headless diagnostic exercised via `ghbdtn --selftest`. Runs the REAL
 /// Decider + LanguageScorer against known keystroke sequences so detection
@@ -116,7 +117,56 @@ enum SelfTest {
         print("\n\(pass)/\(cases.count) passed")
 
         measureLatency()
-        return pass == cases.count
+        let voiceOK = voicePipelineChecks()
+        return pass == cases.count && voiceOK
+    }
+
+    // MARK: - Voice pipeline (dictation) sanity
+
+    /// Mic-free checks of the dictation plumbing: whisper.cpp linkage, the
+    /// 16 kHz resampler, WAV encoding, and transcript cleanup.
+    private static func voicePipelineChecks() -> Bool {
+        var ok = true
+        func check(_ name: String, _ condition: Bool, _ detail: @autoclosure () -> String = "") {
+            print("\(condition ? "✅" : "❌") voice: \(name)\(condition ? "" : "  — \(detail())")")
+            if !condition { ok = false }
+        }
+
+        // whisper.cpp dylib linked and callable.
+        let sysinfo = String(cString: whisper_print_system_info())
+        check("whisper.cpp linked", !sysinfo.isEmpty, "empty system info")
+
+        // Resampler: 1 s of 48 kHz sine → ~16k samples at 16 kHz.
+        let sr = 48_000.0
+        let sine = (0..<Int(sr)).map { Float(sin(2 * .pi * 440 * Double($0) / sr)) }
+        let recording = AudioCapture.Recording(samples: sine, sampleRate: sr)
+        do {
+            let converted = try AudioCapture.convertTo16k(recording)
+            check("resample 48k→16k count", abs(converted.count - 16_000) < 100,
+                  "got \(converted.count) samples")
+            let peak = converted.map(abs).max() ?? 0
+            check("resample amplitude preserved", peak > 0.9 && peak <= 1.01,
+                  "peak \(peak)")
+        } catch {
+            check("resample 48k→16k", false, "\(error)")
+        }
+
+        // WAV encoding: header fields + payload size.
+        let wav = AudioCapture.wavData(samples16k: [0, 0.5, -0.5, 1])
+        check("wav size", wav.count == 44 + 8, "got \(wav.count) bytes")
+        check("wav RIFF/WAVE header",
+              wav.prefix(4) == Data("RIFF".utf8) && wav[8..<12] == Data("WAVE".utf8))
+        let rate = wav[24..<28].withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
+        check("wav sample rate 16000", UInt32(littleEndian: rate) == 16_000, "got \(rate)")
+
+        // Transcript cleanup: artifacts stripped, real parentheses kept.
+        check("clean [BLANK_AUDIO]",
+              DictationController.cleanTranscript(" [BLANK_AUDIO] ").isEmpty)
+        check("clean (music)-only", DictationController.cleanTranscript("(music)").isEmpty)
+        check("keep real text",
+              DictationController.cleanTranscript("Привет, мир (тест)!") == "Привет, мир (тест)!")
+
+        return ok
     }
 
     // MARK: - Diagnostics

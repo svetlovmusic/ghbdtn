@@ -155,6 +155,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         convert.target = self
         menu.addItem(convert)
 
+        // System-wide "dictate here": macOS forbids adding items to other
+        // apps' right-click menus, so the tray menu + global hotkey are the
+        // honest equivalents. The status-item menu does not activate this
+        // app, so the caret stays in the frontmost app's text field.
+        let dictate = NSMenuItem(title: "Диктовка (Whisper)",
+                                 action: #selector(startDictation), keyEquivalent: "")
+        dictate.target = self
+        dictate.image = NSImage(systemSymbolName: "mic", accessibilityDescription: nil)
+        menu.addItem(dictate)
+
         let prefs = NSMenuItem(title: "Настройки…", action: #selector(openSettings), keyEquivalent: ",")
         prefs.target = self
         menu.addItem(prefs)
@@ -178,6 +188,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func manualConvert() {
         engine.manualConvertLastWord()
+    }
+
+    @objc private func startDictation() {
+        Task { @MainActor in DictationController.shared.toggle() }
     }
 
     @objc private func openSettings() {
@@ -237,7 +251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.engine.manualConvertLastWord()
         }
         center.onAction(.voiceDictation) {
-            DictationController.shared.toggle()
+            Task { @MainActor in DictationController.shared.toggle() }
         }
         center.register(.manualConvert, hotkey: settings.manualConvertHotkey)
         center.register(.voiceDictation, hotkey: settings.whisperHotkey)
