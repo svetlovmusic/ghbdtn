@@ -35,6 +35,11 @@ final class AutoSwitchEngine {
     /// The word we just auto-converted, kept so an immediate ⌦/retype can veto it.
     private var lastConversionOriginal: String?
 
+    /// The most recent *automatic* conversion (not a manual-forced one), kept so
+    /// that backspacing it feeds persistent negative learning: the as-typed word
+    /// plus its source language, i.e. "the user rejected converting this".
+    private var lastAutoConversion: (text: String, sourceLang: String)?
+
     /// Monotonic counter bumped on every keyboard/navigation event. Async
     /// deciders (the cloud-AI layer) capture it before their network round-trip
     /// and refuse to inject if it changed — i.e. the user typed something since,
@@ -146,8 +151,15 @@ final class AutoSwitchEngine {
             if let rejected = lastConversionOriginal {
                 buffer.veto(rejected)
             }
+            // Persistent negative learning: repeatedly rejecting the same auto
+            // conversion (≥ LearnedStore.activationCount) makes the engine keep
+            // that word for good. One rejection only vetoes it this session.
+            if let auto = lastAutoConversion, !auto.sourceLang.isEmpty {
+                LanguageScorer.shared.learnNegative(word: auto.text, language: auto.sourceLang)
+            }
             buffer.backspace()
             lastConversionOriginal = nil
+            lastAutoConversion = nil
 
         case let .key(stroke, hasCommandLikeModifiers):
             if hasCommandLikeModifiers {
@@ -165,6 +177,7 @@ final class AutoSwitchEngine {
                 // it closes the immediate-reject window (a later backspace must
                 // not veto the word we converted before it).
                 lastConversionOriginal = nil
+                lastAutoConversion = nil
                 // Pass the stroke: if the word converts, the delimiter has to be
                 // re-typed as the *target* layout's character (the ABC '/' the
                 // user pressed means Russian '.'), not the source glyph.
@@ -174,6 +187,7 @@ final class AutoSwitchEngine {
             }
             buffer.append(stroke, activeLayoutID: active.id)
             lastConversionOriginal = nil
+            lastAutoConversion = nil
             if settings.trigger == .live {
                 evaluateCurrentWord(final: false)
             }
@@ -261,7 +275,7 @@ final class AutoSwitchEngine {
     ///   re-typed as the character that key produces under `target` — the ABC
     ///   '/' the user pressed becomes Russian '.'.
     private func apply(_ decision: Decider.Decision, reemitDelimiter: Character?,
-                       delimiterStroke: KeyStroke? = nil) {
+                       delimiterStroke: KeyStroke? = nil, forced: Bool = false) {
         let target = decision.target
         let corrected = decision.correctedText
         let original = decision.originalText
@@ -283,6 +297,10 @@ final class AutoSwitchEngine {
         buffer.consumeLastWord()
         buffer.softReset()
         lastConversionOriginal = original
+        // Only automatic conversions arm negative learning: a manual-forced one
+        // being backspaced is the user changing their own mind, not the engine
+        // being wrong.
+        lastAutoConversion = forced ? nil : (original, decision.source.primaryLanguage ?? "")
 
         // Learn only from *trustworthy* corrections: a word the target
         // language's dictionary actually recognizes. Learning from every
@@ -358,7 +376,15 @@ final class AutoSwitchEngine {
         // If the word was already terminated (buffer rolled over), the delimiter
         // is on screen — delete and re-emit it around the correction.
         let reemit: Character? = buffer.isEmpty ? buffer.lastWordDelimiterChar : nil
-        apply(decision, reemitDelimiter: reemit)
+        apply(decision, reemitDelimiter: reemit, forced: true)
+
+        // Positive learning: the user explicitly asked for this word. After
+        // LearnedStore.activationCount forced conversions it auto-converts on
+        // its own — this is how the engine learns names, slang, and short
+        // loanwords ("пэд") no built-in signal recognizes.
+        if let lang = decision.target.primaryLanguage {
+            LanguageScorer.shared.learnPositive(word: decision.correctedText, language: lang)
+        }
     }
 
     /// Convert whatever text is currently selected (works even with no buffer,
