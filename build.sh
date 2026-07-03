@@ -33,6 +33,15 @@ mkdir -p "$APP/Contents/Resources"
 cp "$BUILD_DIR/$APP_NAME" "$APP/Contents/MacOS/$APP_NAME"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 
+# SwiftPM resource bundle with the n-gram language models. The app searches
+# Contents/Resources/Ghbdtn_Ghbdtn.bundle/Models/ (see NgramModel.locateModel).
+RESOURCE_BUNDLE="$BUILD_DIR/Ghbdtn_Ghbdtn.bundle"
+if [ ! -d "$RESOURCE_BUNDLE" ]; then
+  echo "✗ Missing resource bundle: $RESOURCE_BUNDLE (n-gram models)" >&2
+  exit 1
+fi
+cp -R "$RESOURCE_BUNDLE" "$APP/Contents/Resources/"
+
 # Ad-hoc code signature. Accessibility permission is tied to the signature, so
 # a stable signing identity keeps the grant across launches. Ad-hoc re-prompts
 # after each rebuild — for a real release, sign with a Developer ID.
