@@ -24,7 +24,7 @@ if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$WHISPER_VERSION" ]; then
   exit 0
 fi
 
-echo "▸ Fetching whisper.cpp XCFramework $WHISPER_VERSION…"
+echo "▸ Fetching whisper.cpp XCFramework ${WHISPER_VERSION}…"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
