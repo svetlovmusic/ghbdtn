@@ -78,6 +78,26 @@ def collect_tokens(lang, corpora_dir):
     return freqs
 
 
+def load_domain_words(lang, domain_dir):
+    """Curated domain terminology (music, programming, 3D, audiophile) mixed
+    into the corpus so its character statistics reflect the transliterated
+    loanwords practitioners type (пэд, сэмпл, шейдер) — words too rare in
+    general news/web text for the base model to rate as plausible. One word per
+    line; only entries that are a single clean token of the language survive."""
+    path = os.path.join(domain_dir, f"{lang}.txt")
+    if not os.path.exists(path):
+        return []
+    rx = TOKEN_RE[lang]
+    seen = {}
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            w = line.strip().lower()
+            m = rx.fullmatch(w) if w else None
+            if m and 1 <= len(w) <= MAX_WORD_LEN:
+                seen[w] = True
+    return list(seen)
+
+
 def calibrate(bin_model, word_freqs):
     """Quantiles of per-char avg lnP over real word TYPES (each distinct word
     once, hapaxes dropped as likely typos), computed with the QUANTIZED model
@@ -156,6 +176,10 @@ def main():
                     default=os.path.join(root, "Sources/Ghbdtn/Resources/Models"))
     ap.add_argument("--min-count4", type=int, default=1,
                     help="prune 4-grams with count below this (1 = keep all)")
+    ap.add_argument("--domain-dir", default=os.path.join(root, "tools/domain-corpora"),
+                    help="directory with {lang}.txt curated domain wordlists")
+    ap.add_argument("--domain-weight", type=int, default=50,
+                    help="pseudo-count added per domain term (0 disables)")
     args = ap.parse_args()
 
     os.makedirs(args.corpora_dir, exist_ok=True)
@@ -166,6 +190,12 @@ def main():
         print(f"[{lang}] collecting tokens…")
         freqs = collect_tokens(lang, args.corpora_dir)
         print(f"  {len(freqs):,} distinct words, {sum(freqs.values()):,} tokens")
+
+        if args.domain_weight > 0:
+            dom = load_domain_words(lang, args.domain_dir)
+            for w in dom:
+                freqs[w] += args.domain_weight
+            print(f"  + {len(dom):,} domain terms @ weight {args.domain_weight}")
 
         print(f"[{lang}] training interpolated Kneser-Ney…")
         t0 = time.time()
