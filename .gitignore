@@ -20,3 +20,6 @@ DerivedData/
 # Python (tools/ training scripts)
 __pycache__/
 *.pyc
+
+# Distributable .dmg (build artifact — produced by tools/make-dist.sh)
+dist/
