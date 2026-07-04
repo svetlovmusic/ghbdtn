@@ -42,19 +42,20 @@ enum Sensitivity: String, CaseIterable, Identifiable, Codable {
     /// swapped interpretation reads like real text (≥ minCandidate) AND the
     /// as-typed one reads like gibberish (≤ maxTyped).
     ///
-    /// Tuned by tools/eval_thresholds.py over the full training vocabulary in
-    /// both layout directions: the zero-false-positive frontier is at
-    /// (0.34, 0.010) for complete words and (0.08, 0.005) for prefixes;
-    /// balanced/cautious add safety headroom, aggressive sits on the frontier.
-    /// Mid-word (prefix) evaluation uses stricter typed-thresholds because
-    /// live mode re-fires on every keystroke.
+    /// Tuned by tools/eval_thresholds.py over the full training vocabulary —
+    /// now including the curated domain terms (tools/domain-corpora) mixed into
+    /// the model — in both layout directions. With the retrained model the
+    /// zero-false-positive frontier is (0.35, 0.030) for complete words and
+    /// (0.05, 0.005) for prefixes; balanced/cautious keep headroom, aggressive
+    /// sits on the frontier. Prefix thresholds stay stricter than the frontier
+    /// allows because live mode re-fires on every keystroke.
     func ngramThresholds(completeWord: Bool) -> (minCandidate: Double, maxTyped: Double) {
         switch (self, completeWord) {
-        case (.cautious, true):    return (0.55, 0.002)
+        case (.cautious, true):    return (0.50, 0.003)
         case (.cautious, false):   return (0.30, 0.001)
-        case (.balanced, true):    return (0.40, 0.005)
+        case (.balanced, true):    return (0.36, 0.010)
         case (.balanced, false):   return (0.20, 0.003)
-        case (.aggressive, true):  return (0.34, 0.010)
+        case (.aggressive, true):  return (0.35, 0.020)
         case (.aggressive, false): return (0.10, 0.004)
         }
     }

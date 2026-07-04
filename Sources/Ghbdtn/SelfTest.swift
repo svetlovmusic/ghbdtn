@@ -104,6 +104,11 @@ enum SelfTest {
             // Same trap one letter longer: 'ls' is a token the spellchecker
             // accepts, so require a ≥2-letter stem before the apostrophe.
             Case(keys: "g'ls", source: ru, expectConvert: false, note: "пэды (real word) → keep, not g'ls"),
+            // Domain terminology mixed into the n-gram model (tools/domain-corpora):
+            // "сэмпл" now reads as plausible Russian → auto-converts, and is kept
+            // when typed correctly.
+            Case(keys: "c'vgk", source: en, expectConvert: true,  note: "сэмпл (domain term) → convert"),
+            Case(keys: "c'vgk", source: ru, expectConvert: false, note: "сэмпл typed correctly → keep"),
             // Apostrophe words must still convert via the dictionary layer.
             Case(keys: "don't", source: ru, expectConvert: true, note: "вщтэе → don't (apostrophe allowed)"),
             // A correctly-typed word carrying trailing sentence punctuation
