@@ -39,6 +39,8 @@ NUM_QUANTILES = 101  # p0..p100
 ALPHABETS = {
     "en": "^$'" + "abcdefghijklmnopqrstuvwxyz",
     "ru": "^$" + "абвгдеёжзийклмнопрстуфхцчшщъыьэюя",
+    # Ukrainian: 33 letters incl. ґ є і ї, plus the apostrophe (з'їзд, п'ять).
+    "uk": "^$'" + "абвгґдеєжзиіїйклмнопрстуфхцчшщьюя",
 }
 
 BOUNDARY = ("^", "$")
