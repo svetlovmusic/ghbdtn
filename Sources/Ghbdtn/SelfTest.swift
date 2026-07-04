@@ -27,6 +27,40 @@ enum SelfTest {
         keys.compactMap { ch in k[ch].map { KeyStroke(keyCode: $0, shift: false, capsLock: false) } }
     }
 
+    /// Diagnostic (`--learncheck`): loads the user's REAL learned.json (does NOT
+    /// disable persistence) and reports whether the Decider converts the learned
+    /// words' wrong-layout twins. Read-only — never writes.
+    static func learnCheck() -> Bool {
+        let layouts = LayoutManager.shared.enabledLayouts()
+        guard let en = layouts.first(where: { ($0.primaryLanguage ?? "") == "en" || $0.id.contains("ABC") }),
+              let ru = layouts.first(where: { ($0.primaryLanguage ?? "") == "ru" }) else {
+            print("⚠️  need both en and ru layouts enabled"); return false
+        }
+        _ = ru
+        let scorer = LanguageScorer.shared
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline && !(scorer.hasNgramModel(for: "en") && scorer.hasNgramModel(for: "ru")) {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        print("Enabled layouts: \(layouts.map { "\($0.localizedName)[\($0.primaryLanguage ?? "?")]" }.joined(separator: ", "))")
+        for w in ["пэд", "пэды"] {
+            let c = scorer.learnedCount(word: w, language: "ru", positive: true)
+            let s = scorer.score(w, language: "ru", completeWord: true)
+            print("  \(w)[ru]: learnedCount=\(c) isLearnedWord=\(s.isLearnedWord) isCommon=\(s.isCommonWord)")
+        }
+        for keys in ["g'l", "g'ls"] {
+            let st = strokes(for: keys)
+            let asTyped = KeyTranslator.shared.interpret(st, layout: en)
+            let d = Decider.decide(strokes: st, source: en, candidates: layouts, sensitivity: .balanced)
+            if let d, d.confident {
+                print("  [\(keys)] en \(asTyped) → \(d.correctedText)  ✅ CONVERTS")
+            } else {
+                print("  [\(keys)] en \(asTyped) → kept  (decision=\(d.map { "\($0.correctedText) confident=\($0.confident)" } ?? "nil"))")
+            }
+        }
+        return true
+    }
+
     static func run() -> Bool {
         let layouts = LayoutManager.shared.enabledLayouts()
         print("Enabled layouts: \(layouts.map { "\($0.localizedName)[\($0.primaryLanguage ?? "?")]" }.joined(separator: ", "))")
