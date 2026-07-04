@@ -281,7 +281,7 @@ final class LanguageScorer {
             self.bigrams["ru"] = ru
             Log.info("Bigram models seeded: en=\(en.count) pairs, ru=\(ru.count) pairs")
 
-            for lang in ["en", "ru"] {
+            for lang in ["en", "ru", "uk"] {
                 guard let url = NgramModel.locateModel(language: lang) else {
                     Log.error("No n-gram model found for \(lang) — OOV detection disabled")
                     continue

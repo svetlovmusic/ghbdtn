@@ -29,12 +29,15 @@ import ngram_lm  # noqa: E402
 CORPORA = {
     "en": ["eng_news_2023_100K", "eng-com_web-public_2018_100K"],
     "ru": ["rus_news_2023_100K", "rus-ru_web-public_2019_100K"],
+    "uk": ["ukr_news_2023_100K", "ukr_newscrawl_2011_100K"],
 }
 BASE_URL = "https://downloads.wortschatz-leipzig.de/corpora/"
 
 TOKEN_RE = {
     "en": re.compile(r"[a-z]+(?:'[a-z]+)*"),
     "ru": re.compile(r"[а-яё]+"),
+    # Ukrainian letters (incl. і ї є ґ) plus internal apostrophes (п'ять).
+    "uk": re.compile(r"[абвгґдеєжзиіїйклмнопрстуфхцчшщьюя]+(?:'[абвгґдеєжзиіїйклмнопрстуфхцчшщьюя]+)*"),
 }
 MAX_WORD_LEN = 20
 # Runtime gating: complete words scored from 4 letters, prefixes from 5.
@@ -154,14 +157,16 @@ def sanity_check(bin_model, lang):
         raise AssertionError(f"probability mass off for {lang}: [{lo}, {hi}]")
 
 
+SMOKE_WORDS = {
+    "en": ["hello", "world", "shablovsky", "spasibo", "asdfgh", "ghbdtn"],
+    "ru": ["привет", "андрей", "смузи", "фывапр", "ызфышищ", "руддщ"],
+    "uk": ["привіт", "дякую", "семпл", "шейдер", "фівапр", "ячсміть"],
+}
+
+
 def smoke_report(models):
-    en, ru = models["en"], models["ru"]
-    rows = [
-        ("en", en, ["hello", "world", "shablovsky", "spasibo", "asdfgh", "ghbdtn"]),
-        ("ru", ru, ["привет", "андрей", "смузи", "фывапр", "ызфышищ", "руддщ"]),
-    ]
-    for lang, m, words in rows:
-        for w in words:
+    for lang, m in models.items():
+        for w in SMOKE_WORDS.get(lang, []):
             avg = m.avg_logp(w, complete=True)
             pct = m.percentile(avg, complete=True) if avg is not None else None
             print(f"  {lang} {w!r}: avg={avg and round(avg, 3)} pct={pct and round(pct, 3)}")
@@ -186,7 +191,7 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
 
     models = {}
-    for lang in ("en", "ru"):
+    for lang in CORPORA:
         print(f"[{lang}] collecting tokens…")
         freqs = collect_tokens(lang, args.corpora_dir)
         print(f"  {len(freqs):,} distinct words, {sum(freqs.values()):,} tokens")

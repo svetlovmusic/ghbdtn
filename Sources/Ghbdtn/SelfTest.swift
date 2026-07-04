@@ -249,7 +249,7 @@ enum SelfTest {
     // MARK: - Diagnostics
 
     private static func reportModels() {
-        for lang in ["en", "ru"] {
+        for lang in ["en", "ru", "uk"] {
             guard let url = NgramModel.locateModel(language: lang),
                   let model = NgramModel(contentsOf: url) else {
                 print("⚠️  n-gram model for \(lang): NOT FOUND — OOV layer disabled")
