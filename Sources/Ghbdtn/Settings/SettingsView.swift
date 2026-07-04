@@ -13,7 +13,7 @@ struct SettingsView: View {
             VoiceTab().tabItem { Label("Голос", systemImage: "mic") }
         }
         .padding(.top, 6)
-        .frame(width: 560, height: 526)
+        .frame(width: 560, height: 640)
     }
 }
 
@@ -200,6 +200,16 @@ private struct HotkeysTab: View {
                 Text("Действует только пока идёт запись — вне диктовки клавиша не перехватывается, поэтому можно назначить просто ⎋ Escape.")
                     .font(.caption).foregroundColor(.secondary)
             }
+            Section("Коррекция текста (ИИ)") {
+                HStack {
+                    Text("Исправить выделенное / всё поле")
+                    Spacer()
+                    HotkeyRecorder(hotkey: $settings.correctionHotkey)
+                        .frame(width: 160, height: 24)
+                }
+                Text("Отправляет выделенный текст (или всё содержимое поля, если ничего не выделено) в облачный ИИ-слой и заменяет на месте — один ⌘Z отменяет всю правку. Нужен ключ во вкладке «ИИ-слой». Поля пароля пропускаются.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
         }
         .formStyle(.grouped)
         .padding()
@@ -210,6 +220,22 @@ private struct HotkeysTab: View {
 
 private struct AITab: View {
     @EnvironmentObject var settings: Settings
+
+    /// Curated model IDs for the dropdown. "Своя модель…" reveals a text field
+    /// so any OpenAI-compatible endpoint (Groq, LM Studio, a newer flagship)
+    /// still works — kept short on purpose, these are the sane defaults.
+    private let knownModels = ["gpt-4.1-mini", "gpt-4o-mini", "gpt-4.1", "gpt-4o"]
+    private let customModelTag = "__custom__"
+
+    // In-app correction probe (no terminal, no config file): paste a mangled
+    // line, hit Исправить, see the result — using the key+model entered above.
+    @State private var probeInput = "окей, и мне все-таки кажется что ы не оч паравильно вьезжаешщь"
+    @State private var probeOutput: String?
+    @State private var probeError: String?
+    @State private var probeMs: Int?
+    @State private var isProbing = false
+
+    private var isCustomModel: Bool { !knownModels.contains(settings.aiModel) }
 
     var body: some View {
         Form {
@@ -222,16 +248,102 @@ private struct AITab: View {
                 Section("Провайдер (OpenAI-совместимый)") {
                     TextField("Base URL", text: $settings.aiBaseURL)
                         .textFieldStyle(.roundedBorder)
-                    TextField("Модель", text: $settings.aiModel)
-                        .textFieldStyle(.roundedBorder)
+                    Picker("Модель", selection: modelSelection) {
+                        ForEach(knownModels, id: \.self) { Text($0).tag($0) }
+                        Text("Своя модель…").tag(customModelTag)
+                    }
+                    if isCustomModel {
+                        TextField("Имя модели", text: $settings.aiModel)
+                            .textFieldStyle(.roundedBorder)
+                    }
                     SecureField("API-ключ (хранится в Keychain)", text: $settings.aiAPIKey)
                         .textFieldStyle(.roundedBorder)
                     Toggle("Обращаться к ИИ только когда локальный движок не уверен", isOn: $settings.aiOnlyWhenUncertain)
+                }
+
+                Section("Промпт коррекции") {
+                    TextEditor(text: $settings.aiCorrectionPrompt)
+                        .font(.system(size: 12, design: .monospaced))
+                        .frame(minHeight: 130)
+                    HStack {
+                        Button("Сбросить к стандартному") {
+                            settings.aiCorrectionPrompt = Settings.defaultCorrectionPrompt
+                        }
+                        Spacer()
+                    }
+                    Text("Инструкция для модели — правь как хочешь. Формат ответа (JSON) добавляется автоматически, его трогать не нужно.")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+
+                Section("Проверка коррекции текста") {
+                    TextField("Кривой текст для проверки", text: $probeInput, axis: .vertical)
+                        .textFieldStyle(.roundedBorder)
+                        .lineLimit(2...5)
+                    HStack {
+                        Button {
+                            runProbe()
+                        } label: {
+                            Label(isProbing ? "Проверяю…" : "Исправить", systemImage: "sparkles")
+                        }
+                        .disabled(isProbing || settings.aiAPIKey.isEmpty || settings.aiModel.isEmpty)
+                        if let probeMs {
+                            Text("\(probeMs) мс").font(.caption).foregroundColor(.secondary)
+                        }
+                        Spacer()
+                    }
+                    if let probeOutput {
+                        Text(probeOutput)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    if let probeError {
+                        Text(probeError).font(.caption).foregroundColor(.red)
+                    }
+                    Text("Отправляет весь введённый здесь текст провайдеру (не одно слово). Тот же ключ и модель, что выше — так проверяется recovery-коррекция без терминала.")
+                        .font(.caption).foregroundColor(.secondary)
                 }
             }
         }
         .formStyle(.grouped)
         .padding()
+    }
+
+    /// Bridges the dropdown to `aiModel`: a known ID selects itself; the sentinel
+    /// clears the field so the revealed text field starts empty for a custom name.
+    private var modelSelection: Binding<String> {
+        Binding(
+            get: { isCustomModel ? customModelTag : settings.aiModel },
+            set: { newValue in
+                if newValue == customModelTag {
+                    if !isCustomModel { settings.aiModel = "" }
+                } else {
+                    settings.aiModel = newValue
+                }
+            }
+        )
+    }
+
+    private func runProbe() {
+        isProbing = true
+        probeOutput = nil
+        probeError = nil
+        probeMs = nil
+        let provider = OpenAICompatibleProvider(
+            baseURL: settings.aiBaseURL,
+            apiKey: settings.aiAPIKey,
+            model: settings.aiModel
+        )
+        let input = probeInput
+        let started = DispatchTime.now()
+        Task {
+            do {
+                let out = try await provider.correct(input, systemPrompt: settings.aiCorrectionPrompt)
+                let ms = Int((Double(DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds) / 1e6).rounded())
+                await MainActor.run { probeOutput = out; probeMs = ms; isProbing = false }
+            } catch {
+                await MainActor.run { probeError = "\(error)"; isProbing = false }
+            }
+        }
     }
 }
 

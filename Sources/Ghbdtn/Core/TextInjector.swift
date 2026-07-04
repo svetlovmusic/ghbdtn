@@ -161,6 +161,73 @@ final class TextInjector {
         }
     }
 
+    // MARK: - On-demand recovery capture (correct selection, or whole field)
+
+    /// The user's clipboard, held between `beginRecovery` and
+    /// `commitRecovery`/`cancelRecovery`. Main-thread only; a single in-flight
+    /// recovery is enforced by RecoveryController's own guard.
+    private var recoverySavedItems: [NSPasteboardItem]?
+
+    /// Capture the text to correct: the current selection via a synthetic ⌘C,
+    /// or — when nothing is selected — the WHOLE focused field via ⌘A then ⌘C.
+    /// The user's clipboard is snapshotted and held until commit/cancel.
+    /// `completion` receives the captured text, or nil if there was nothing to
+    /// grab (in which case the clipboard is already restored).
+    ///
+    /// Caller must ensure no modifier keys are held — a synthetic ⌘C merges
+    /// with them otherwise.
+    func beginRecovery(completion: @escaping (String?) -> Void) {
+        let pasteboard = NSPasteboard.general
+        pendingRestore?.cancel()
+        pendingRestore = nil
+        let savedItems = Self.snapshot(of: pasteboard)
+        recoverySavedItems = savedItems
+        let changeBefore = pasteboard.changeCount
+
+        postKey(keyCode: keyCode(for: "c"), flags: .maskCommand) // copy selection
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            guard let self else { completion(nil); return }
+            if pasteboard.changeCount != changeBefore,
+               let selected = pasteboard.string(forType: .string), !selected.isEmpty {
+                completion(selected)
+                return
+            }
+            // Nothing selected → select the whole field and copy that.
+            self.postKey(keyCode: self.keyCode(for: "a"), flags: .maskCommand)
+            self.postKey(keyCode: self.keyCode(for: "c"), flags: .maskCommand)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                if pasteboard.changeCount != changeBefore,
+                   let all = pasteboard.string(forType: .string), !all.isEmpty {
+                    completion(all)
+                } else {
+                    self.cancelRecovery()   // nothing to correct — put clipboard back
+                    completion(nil)
+                }
+            }
+        }
+    }
+
+    /// Paste `corrected` over the still-selected captured text. A single ⌘V is
+    /// one undo group, so one ⌘Z reverts the whole correction. The user's
+    /// clipboard is restored after a grace period.
+    func commitRecovery(_ corrected: String) {
+        let pasteboard = NSPasteboard.general
+        let savedItems = recoverySavedItems ?? []
+        recoverySavedItems = nil
+        pasteboard.clearContents()
+        pasteboard.setString(corrected, forType: .string)
+        let ourWrite = pasteboard.changeCount
+        postKey(keyCode: keyCode(for: "v"), flags: .maskCommand)
+        scheduleRestore(pasteboard: pasteboard, items: savedItems, ourChangeCount: ourWrite)
+    }
+
+    /// Abandon a capture without pasting: restore the user's clipboard now.
+    func cancelRecovery() {
+        guard let items = recoverySavedItems else { return }
+        recoverySavedItems = nil
+        Self.restore(pasteboard: NSPasteboard.general, items: items)
+    }
+
     /// Keycode that produces `char` under the CURRENT layout, so synthetic
     /// ⌘V/⌘C reach the target app as the right shortcut on remapped Latin
     /// layouts (Dvorak, Colemak). Non-Latin layouts (Russian, …) have no such
@@ -169,7 +236,11 @@ final class TextInjector {
     private func keyCode(for char: Character) -> UInt16 {
         guard let layout = LayoutManager.shared.currentLayout(),
               let stroke = KeyTranslator.shared.reverseMap(for: layout)[char] else {
-            return char == "c" ? UInt16(kVK_ANSI_C) : UInt16(kVK_ANSI_V)
+            switch char {
+            case "c": return UInt16(kVK_ANSI_C)
+            case "a": return UInt16(kVK_ANSI_A)
+            default:  return UInt16(kVK_ANSI_V)
+            }
         }
         return stroke.keyCode
     }

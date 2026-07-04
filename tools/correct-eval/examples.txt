@@ -1,0 +1,26 @@
+# Text-correction eval inputs. One deliberately-mangled line per row.
+# Blank lines and lines starting with # are ignored.
+# Add your own REAL messed-up examples below the seed set — the more realistic,
+# the more the numbers mean. Watch the FIX line for over-edits (rewrites of text
+# that was already fine, or your slang/terms getting "normalized").
+
+# --- the compound-corruption stress case from the design chat ---
+окей, и мне все-таки кажется что ы не оч паравильно вьезжаешщь в то ан сколко вс мо ежет быть полох о и что by j u kf лучше чтоыб нейронка работал
+
+# --- split word (space inside a word) ---
+я хочу отстать ся от этой привычки
+
+# --- transposition + missing letter ---
+превет как дела сеодгня
+
+# --- extra letters + doubled/extra spaces ---
+текстт с лишнеей буквой и   лишними  пробелами
+
+# --- wrong keyboard layout (Russian typed on US layout) ---
+ghbdtn vs vth
+
+# --- an already-clean line: FIX should equal ORIG (over-edit check) ---
+Сегодня отличный день, всё работает как надо.
+
+# --- slang / domain terms that must NOT be "corrected" away ---
+закинул сэмпл в да379 и накрутил реверб, вышло по кайфу
