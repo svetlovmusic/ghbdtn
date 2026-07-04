@@ -11,7 +11,10 @@
 #   ./install.sh                  # build (ad-hoc signed) and install
 #   ./install.sh --stable-signing # + create a stable self-signed identity so the
 #                                 #   Accessibility grant survives future updates
+#   ./install.sh --clean          # ship WITHOUT the pre-taught learned words
+#                                 #   (Resources/seed-learned.json); start blank
 #   ./install.sh --no-launch      # don't open the app / Settings afterward
+# Missing Command Line Tools are installed automatically (the script waits).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -22,11 +25,13 @@ MIN_MACOS="13.3"
 
 STABLE_SIGNING="no"
 DO_LAUNCH="yes"
+CLEAN="no"
 for arg in "$@"; do
   case "$arg" in
     --stable-signing) STABLE_SIGNING="yes" ;;
     --no-launch)      DO_LAUNCH="no" ;;
-    -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
+    --clean)          CLEAN="yes" ;;
+    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -43,10 +48,20 @@ fi
 ok "macOS $VER"
 
 # 2. Swift toolchain (Command Line Tools or Xcode) -------------------------
+# CLT is an Apple component and can't be bundled, but we can kick off its
+# install and WAIT for it to finish, so you don't have to re-run this script.
 if ! xcode-select -p >/dev/null 2>&1 || ! command -v swift >/dev/null 2>&1; then
-  say "Xcode Command Line Tools are required — opening the installer…"
+  say "Xcode Command Line Tools missing — starting their install…"
   xcode-select --install 2>/dev/null || true
-  die "Finish the Command Line Tools installation, then re-run ./install.sh"
+  say "A system dialog opened — click \"Install\". Waiting for it to finish…"
+  waited=0
+  until xcode-select -p >/dev/null 2>&1 && command -v swift >/dev/null 2>&1; do
+    sleep 5; waited=$((waited + 5))
+    if [ "$waited" -ge 1800 ]; then
+      die "Command Line Tools still not ready after 30 min. Install them, then re-run ./install.sh"
+    fi
+    [ $((waited % 30)) -eq 0 ] && printf "  …still waiting (%ss)\n" "$waited"
+  done
 fi
 ok "Swift toolchain present"
 
@@ -59,7 +74,12 @@ fi
 
 # 4. Build (fetches whisper.cpp on first run, then compiles + bundles) ------
 say "Building — first run downloads ~48 MB of whisper.cpp (checksum-verified)…"
-"$ROOT/build.sh"
+if [ "$CLEAN" = "yes" ]; then
+  say "Clean install: shipped learned-words seed will be excluded."
+  GHBDTN_CLEAN=1 "$ROOT/build.sh"
+else
+  "$ROOT/build.sh"
+fi
 [ -d "$SRC_APP" ] || die "Build did not produce $SRC_APP"
 
 # 5. Install into /Applications (stable path keeps the Accessibility grant) -

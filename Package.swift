@@ -17,7 +17,11 @@ let package = Package(
                 // Character 4-gram models (see tools/train_ngram.py). Packed
                 // into Ghbdtn_Ghbdtn.bundle next to the built binary; build.sh
                 // copies that bundle into the .app's Contents/Resources.
-                .copy("Resources/Models")
+                .copy("Resources/Models"),
+                // Shared learned words (committed via tools/save-learned.sh) so
+                // a fresh install already knows what you taught the app. A
+                // `--clean` install strips this from the bundle (build.sh).
+                .copy("Resources/seed-learned.json")
             ],
             linkerSettings: [
                 .linkedFramework("AppKit"),
