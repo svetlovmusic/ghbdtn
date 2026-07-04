@@ -1,0 +1,63 @@
+name: Release .dmg
+
+# Build ghbdtn.app into a .dmg on a macOS runner and attach it to the GitHub
+# Release whenever a version tag (vX.Y.Z) is pushed. Manual runs
+# (workflow_dispatch) build the .dmg for testing but skip the upload.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write            # create/update releases and upload assets
+
+jobs:
+  build-dmg:
+    runs-on: macos-14        # Apple Silicon runner (matches the arm64 app)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain info
+        run: swift --version && sw_vers
+
+      # whisper.xcframework is pinned+checksummed in fetch-whisper.sh, so cache
+      # it by that file's hash to avoid re-downloading ~48 MB every run.
+      - name: Cache whisper.xcframework
+        uses: actions/cache@v4
+        with:
+          path: Vendor
+          key: whisper-${{ hashFiles('tools/fetch-whisper.sh') }}
+
+      # OPTIONAL: sign with a real certificate for the friendlier Gatekeeper
+      # ("unidentified developer" + right-click Open) instead of ad-hoc
+      # ("damaged"). Set repo secrets SIGNING_P12_BASE64 (base64 of a .p12
+      # export of the "Ghbdtn Local Signing" identity) and SIGNING_P12_PASSWORD.
+      # Without them the build falls back to ad-hoc automatically.
+      - name: Import signing certificate (optional)
+        env:
+          P12: ${{ secrets.SIGNING_P12_BASE64 }}
+          P12_PW: ${{ secrets.SIGNING_P12_PASSWORD }}
+        run: |
+          if [ -z "${P12:-}" ]; then
+            echo "No SIGNING_P12_BASE64 secret — build.sh will use ad-hoc signing."
+            exit 0
+          fi
+          KC="$RUNNER_TEMP/ghbdtn-ci.keychain-db"
+          security create-keychain -p ci "$KC"
+          security set-keychain-settings "$KC"
+          security unlock-keychain -p ci "$KC"
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          echo "$P12" | base64 --decode > "$RUNNER_TEMP/id.p12"
+          security import "$RUNNER_TEMP/id.p12" -k "$KC" -P "${P12_PW:-}" -T /usr/bin/codesign -A
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci "$KC" >/dev/null
+          echo "Imported signing identity into CI keychain."
+
+      - name: Build .dmg
+        run: ./tools/make-dist.sh
+
+      - name: Attach .dmg to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.dmg
+          fail_on_unmatched_files: true
