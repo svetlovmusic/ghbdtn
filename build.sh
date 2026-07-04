@@ -45,6 +45,13 @@ if [ ! -d "$RESOURCE_BUNDLE" ]; then
 fi
 cp -R "$RESOURCE_BUNDLE" "$APP/Contents/Resources/"
 
+# Clean install: drop the shipped learned-words seed so the app starts with no
+# pre-taught words (install.sh --clean sets GHBDTN_CLEAN=1).
+if [ "${GHBDTN_CLEAN:-0}" = "1" ]; then
+  rm -f "$APP/Contents/Resources/Ghbdtn_Ghbdtn.bundle/seed-learned.json"
+  echo "▸ Clean build: shipped learned-words seed excluded"
+fi
+
 # whisper.framework is a dynamic library; the executable links it via
 # @rpath = @executable_path/../Frameworks (see Package.swift linker flags).
 WHISPER_FRAMEWORK="$ROOT/Vendor/whisper.xcframework/macos-arm64_x86_64/whisper.framework"

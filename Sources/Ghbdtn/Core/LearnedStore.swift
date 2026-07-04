@@ -40,6 +40,10 @@ final class LearnedStore {
     init(persistent: Bool = true) {
         url = persistent ? Self.defaultURL() : nil
         load()
+        // Merge the app-bundled seed of shared learned words (committed to git,
+        // so a fresh install / another machine already knows what you taught the
+        // app). Read-only — never written back; a `--clean` build ships no seed.
+        if persistent { mergeSeed() }
     }
 
     // MARK: - Reads (hot path)
@@ -92,6 +96,34 @@ final class LearnedStore {
         positive = snap.positive
         negative = snap.negative
         lock.unlock()
+    }
+
+    /// Fold the shipped seed into memory, keeping the higher count per word, so
+    /// seeded words are known without overwriting the user's own writable file.
+    private func mergeSeed() {
+        guard let seedURL = Self.locateSeed(),
+              let data = try? Data(contentsOf: seedURL),
+              let snap = try? JSONDecoder().decode(Snapshot.self, from: data) else { return }
+        lock.lock(); defer { lock.unlock() }
+        for (lang, words) in snap.positive {
+            for (w, c) in words { positive[lang, default: [:]][w] = max(positive[lang]?[w] ?? 0, c) }
+        }
+        for (lang, words) in snap.negative {
+            for (w, c) in words { negative[lang, default: [:]][w] = max(negative[lang]?[w] ?? 0, c) }
+        }
+    }
+
+    /// Locate the bundled `seed-learned.json` (same search as NgramModel). A
+    /// `--clean` install ships without it, so this returns nil and the seed is
+    /// simply skipped.
+    private static func locateSeed() -> URL? {
+        let file = "Ghbdtn_Ghbdtn.bundle/seed-learned.json"
+        var candidates: [URL] = []
+        if let res = Bundle.main.resourceURL { candidates.append(res.appendingPathComponent(file)) }
+        if let exe = Bundle.main.executableURL {
+            candidates.append(exe.deletingLastPathComponent().appendingPathComponent(file))
+        }
+        return candidates.first { FileManager.default.fileExists(atPath: $0.path) }
     }
 
     private func persist(_ snap: Snapshot) {
