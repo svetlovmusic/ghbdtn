@@ -55,7 +55,7 @@ cat > "$STAGING/❗️ ПРОЧТИ — установка.txt" <<'EOF'
 Хоткеи: ⌃⌥Space — ручная конвертация,  ⌃⌥V — диктовка.
 EOF
 
-echo "▸ Creating $DMG…"
+echo "▸ Creating ${DMG}…"
 mkdir -p "$OUT_DIR"
 rm -f "$DMG"
 hdiutil create -volname "$VOL" -srcfolder "$STAGING" -ov -format UDZO "$DMG" >/dev/null

@@ -14,6 +14,12 @@ permissions:
 jobs:
   build-dmg:
     runs-on: macos-14        # Apple Silicon runner (matches the arm64 app)
+    env:
+      # Runner locale can be non-UTF-8, where bash 3.2 folds bytes of a
+      # trailing "…" into a variable name ($VAR… → unbound). UTF-8 + braced
+      # vars in the scripts both guard against it.
+      LANG: en_US.UTF-8
+      LC_ALL: en_US.UTF-8
     steps:
       - uses: actions/checkout@v4
 
