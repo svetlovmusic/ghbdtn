@@ -1,0 +1,6 @@
+{
+  "_comment": "Copy this file to config.json (gitignored) and paste your OpenAI key. config.json is never committed.",
+  "apiKey": "sk-paste-your-openai-key-here",
+  "model": "gpt-4.1-mini",
+  "baseURL": "https://api.openai.com/v1"
+}

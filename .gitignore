@@ -23,3 +23,6 @@ __pycache__/
 
 # Distributable .dmg (build artifact — produced by tools/make-dist.sh)
 dist/
+
+# OpenAI key for the correction eval — NEVER commit the pasted key.
+tools/correct-eval/config.json

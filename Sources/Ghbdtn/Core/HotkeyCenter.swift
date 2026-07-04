@@ -13,6 +13,8 @@ final class HotkeyCenter {
         /// Registered only while a dictation session is live (it may be a
         /// bare key like Escape — must never be captured globally).
         case voiceCancel = 3
+        /// On-demand cloud text-correction ("recovery") on the selection/field.
+        case textCorrection = 4
     }
 
     private var handlers: [Action: () -> Void] = [:]

@@ -18,6 +18,12 @@ if CommandLine.arguments.contains("--selftest") {
     exit(SelfTest.run() ? 0 : 1)
 }
 
+// Validation probe for the on-demand cloud correction backend:
+// `ghbdtn --correct-eval [--model <name>]`. Reads tools/correct-eval/{config,examples}.
+if CommandLine.arguments.contains("--correct-eval") {
+    exit(CorrectEval.runBlocking() ? 0 : 1)
+}
+
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate

@@ -113,11 +113,18 @@ final class Settings: ObservableObject {
     /// Cancels a live dictation without inserting. May be a bare key (Escape
     /// by default): it is registered only for the duration of a session.
     @Published var voiceCancelHotkey: Hotkey
+    /// Runs the on-demand cloud text-correction ("recovery") pass on the current
+    /// selection — or the whole focused field if nothing is selected —
+    /// replacing it in place (one ⌘Z reverts).
+    @Published var correctionHotkey: Hotkey
 
     // MARK: Cloud AI
     @Published var aiEnabled: Bool
     @Published var aiBaseURL: String
     @Published var aiModel: String
+    /// User-editable instructions for the on-demand text-correction ("recovery")
+    /// pass. The JSON response contract is appended in code, not here.
+    @Published var aiCorrectionPrompt: String
     /// Only consult the cloud model when the local detector is unsure.
     @Published var aiOnlyWhenUncertain: Bool
     /// Not persisted to defaults — mirrored from Keychain.
@@ -153,7 +160,8 @@ final class Settings: ObservableObject {
             Keys.trigger: ConvertTrigger.wordBoundary.rawValue,
             Keys.aiEnabled: false,
             Keys.aiBaseURL: "https://api.openai.com/v1",
-            Keys.aiModel: "gpt-4o-mini",
+            Keys.aiModel: "gpt-4.1-mini",
+            Keys.aiCorrectionPrompt: Settings.defaultCorrectionPrompt,
             Keys.aiOnlyWhenUncertain: true,
             Keys.voiceEnabled: false,
             Keys.voiceEngine: "local",
@@ -180,10 +188,13 @@ final class Settings: ObservableObject {
             ?? Hotkey(keyCode: 0x09, modifiers: UInt32(controlKeyMask | optionKeyMask), enabled: true) // ⌃⌥V
         voiceCancelHotkey = Settings.decodeHotkey(defaults.data(forKey: Keys.voiceCancelHotkey))
             ?? Hotkey(keyCode: 0x35, modifiers: 0, enabled: true) // ⎋ Escape
+        correctionHotkey = Settings.decodeHotkey(defaults.data(forKey: Keys.correctionHotkey))
+            ?? Hotkey(keyCode: 0x0F, modifiers: UInt32(controlKeyMask | optionKeyMask), enabled: true) // ⌃⌥R
 
         aiEnabled = defaults.bool(forKey: Keys.aiEnabled)
         aiBaseURL = defaults.string(forKey: Keys.aiBaseURL) ?? "https://api.openai.com/v1"
-        aiModel = defaults.string(forKey: Keys.aiModel) ?? "gpt-4o-mini"
+        aiModel = defaults.string(forKey: Keys.aiModel) ?? "gpt-4.1-mini"
+        aiCorrectionPrompt = defaults.string(forKey: Keys.aiCorrectionPrompt) ?? Settings.defaultCorrectionPrompt
         aiOnlyWhenUncertain = defaults.bool(forKey: Keys.aiOnlyWhenUncertain)
         aiAPIKey = Keychain.get(account: "ai-api-key") ?? ""
 
@@ -223,9 +234,11 @@ final class Settings: ObservableObject {
         persist($manualConvertHotkey) { self.defaults.set(Settings.encodeHotkey($0), forKey: Keys.manualConvertHotkey) }
         persist($whisperHotkey) { self.defaults.set(Settings.encodeHotkey($0), forKey: Keys.whisperHotkey) }
         persist($voiceCancelHotkey) { self.defaults.set(Settings.encodeHotkey($0), forKey: Keys.voiceCancelHotkey) }
+        persist($correctionHotkey) { self.defaults.set(Settings.encodeHotkey($0), forKey: Keys.correctionHotkey) }
         persist($aiEnabled) { self.defaults.set($0, forKey: Keys.aiEnabled) }
         persist($aiBaseURL) { self.defaults.set($0, forKey: Keys.aiBaseURL) }
         persist($aiModel) { self.defaults.set($0, forKey: Keys.aiModel) }
+        persist($aiCorrectionPrompt) { self.defaults.set($0, forKey: Keys.aiCorrectionPrompt) }
         persist($aiOnlyWhenUncertain) { self.defaults.set($0, forKey: Keys.aiOnlyWhenUncertain) }
         persist($aiAPIKey) { Keychain.set($0, account: "ai-api-key") }
         persist($voiceEnabled) { self.defaults.set($0, forKey: Keys.voiceEnabled) }
@@ -256,6 +269,46 @@ final class Settings: ObservableObject {
         "com.apple.keychainaccess"
     ]
 
+    /// Default, user-editable instructions for the correction pass. Edit in
+    /// Settings → «ИИ-слой» → «Промпт коррекции»; «Сбросить к стандартному»
+    /// restores this text.
+    static let defaultCorrectionPrompt = """
+    Ты аккуратно исправляешь русский и смешанный русско-английский текст, набранный небрежно.
+
+    На входе может быть сильная «каша»: опечатки, переставленные/задвоенные/пропущенные буквы, неправильная раскладка, лишние или пропущенные пробелы, слипшиеся или разорванные слова, пропущенные заглавные буквы и знаки препинания.
+
+    Задача: восстановить наиболее вероятный исходный текст, который человек хотел написать, правильным и естественным русским языком.
+
+    Правила:
+
+    1. Исправляй механику текста:
+       — опечатки;
+       — пропущенные, лишние и переставленные буквы;
+       — слипшиеся и разорванные слова;
+       — неправильную раскладку;
+       — пунктуацию и заглавные буквы.
+
+    2. Не меняй смысл, стиль и степень грубости/разговорности. Не делай текст более вежливым, литературным или нейтральным.
+
+    3. Разрешено восстанавливать пропущенные буквы, пробелы и очевидные части слов, если без них фраза получается неестественной или грамматически кривой.
+
+    4. Не добавляй новые смысловые слова. Но если слово явно восстановлено из побитого фрагмента, это не считается добавлением.
+
+    5. При выборе между несколькими вариантами выбирай тот, который:
+       — грамматически естественнее;
+       — чаще встречается в живой русской речи;
+       — лучше соответствует контексту;
+       — требует минимального изменения смысла, а не минимального количества символов.
+
+    6. Не выбирай буквальный вариант, если он грамматически хуже. Например, если фрагмент можно прочитать как «я как задолбался» или «я так задолбался», выбирай «я так задолбался», потому что это естественная русская конструкция.
+
+    7. Уже правильный текст оставляй без изменений.
+
+    8. Сохраняй сленг, мат, имена, термины, числа, эмодзи и переносы строк.
+
+    9. Если фраза неоднозначна, выбери наиболее вероятное прочтение. Не выводи объяснения, варианты или комментарии — только исправленный текст.
+    """
+
     private enum Keys {
         static let autoSwitchEnabled = "autoSwitchEnabled"
         static let launchAtLogin = "launchAtLogin"
@@ -267,9 +320,11 @@ final class Settings: ObservableObject {
         static let manualConvertHotkey = "manualConvertHotkey"
         static let whisperHotkey = "whisperHotkey"
         static let voiceCancelHotkey = "voiceCancelHotkey"
+        static let correctionHotkey = "correctionHotkey"
         static let aiEnabled = "aiEnabled"
         static let aiBaseURL = "aiBaseURL"
         static let aiModel = "aiModel"
+        static let aiCorrectionPrompt = "aiCorrectionPrompt"
         static let aiOnlyWhenUncertain = "aiOnlyWhenUncertain"
         static let voiceEnabled = "voiceEnabled"
         static let voiceEngine = "voiceEngine"

@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Combine
+import Carbon
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
@@ -15,8 +16,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var recentConversions: [AutoSwitchEngine.ConversionRecord] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Agent app: no Dock icon, no main menu bar app.
+        // Agent app: no Dock icon.
         NSApp.setActivationPolicy(.accessory)
+        // A main menu with an Edit menu — otherwise ⌘X/⌘C/⌘V/⌘A don't reach the
+        // field editor in our windows and just beep (see setupMainMenu).
+        setupMainMenu()
 
         Notifier.requestAuthorization()
         setupStatusItem()
@@ -97,6 +101,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
+    /// An accessory (menu-bar) app has no main menu by default, so the standard
+    /// clipboard shortcuts (⌘X/⌘C/⌘V/⌘A) have no menu item to trigger and just
+    /// beep in our editable windows (Settings). Install a minimal main menu; the
+    /// Edit items use nil target so they travel the responder chain to whatever
+    /// text field is focused. Right-click paste worked already because the field
+    /// editor's own context menu calls paste: directly.
+    private func setupMainMenu() {
+        let mainMenu = NSMenu()
+
+        // App menu (first item) — gives ⌘H / ⌘Q while a window is focused.
+        let appItem = NSMenuItem()
+        mainMenu.addItem(appItem)
+        let appMenu = NSMenu()
+        appItem.submenu = appMenu
+        appMenu.addItem(withTitle: "Скрыть", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Выйти из Ghbdtn (Привет)",
+                        action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+
+        // Edit menu — the whole reason this exists.
+        let editItem = NSMenuItem()
+        mainMenu.addItem(editItem)
+        let editMenu = NSMenu(title: "Правка")
+        editItem.submenu = editMenu
+        editMenu.addItem(withTitle: "Отменить", action: Selector(("undo:")), keyEquivalent: "z")
+        let redo = editMenu.addItem(withTitle: "Повторить", action: Selector(("redo:")), keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "Вырезать", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Копировать", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Вставить", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "Выделить всё", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+
+        NSApp.mainMenu = mainMenu
+    }
+
     private func updateStatusIcon() {
         guard let button = statusItem.button else { return }
         let active = engine.isActive && settings.autoSwitchEnabled
@@ -153,7 +193,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let convert = NSMenuItem(title: "Конвертировать выделенное / последнее слово",
                                  action: #selector(manualConvert), keyEquivalent: "")
         convert.target = self
+        applyShortcut(settings.manualConvertHotkey, to: convert)
         menu.addItem(convert)
+
+        let correct = NSMenuItem(title: "Поправить текст (ИИ)",
+                                 action: #selector(correctText), keyEquivalent: "")
+        correct.target = self
+        correct.image = NSImage(systemSymbolName: "wand.and.stars", accessibilityDescription: nil)
+        applyShortcut(settings.correctionHotkey, to: correct)
+        menu.addItem(correct)
 
         // System-wide "dictate here": macOS forbids adding items to other
         // apps' right-click menus, so the tray menu + global hotkey are the
@@ -163,6 +211,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                  action: #selector(startDictation), keyEquivalent: "")
         dictate.target = self
         dictate.image = NSImage(systemSymbolName: "mic", accessibilityDescription: nil)
+        applyShortcut(settings.whisperHotkey, to: dictate)
         menu.addItem(dictate)
 
         let prefs = NSMenuItem(title: "Настройки…", action: #selector(openSettings), keyEquivalent: ",")
@@ -175,6 +224,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(quit)
 
         statusItem.menu = menu
+    }
+
+    /// Show a Hotkey's shortcut on a status-menu item. Status-item menu key
+    /// equivalents are effectively display-only (they fire only while the menu
+    /// itself is open), so this never double-triggers the global Carbon hotkey.
+    private func applyShortcut(_ hk: Hotkey, to item: NSMenuItem) {
+        guard hk.enabled, !(hk.keyCode == 0 && hk.modifiers == 0),
+              let key = Self.keyEquivalent(for: UInt16(hk.keyCode)) else { return }
+        var mask: NSEvent.ModifierFlags = []
+        if hk.modifiers & UInt32(cmdKey) != 0 { mask.insert(.command) }
+        if hk.modifiers & UInt32(optionKey) != 0 { mask.insert(.option) }
+        if hk.modifiers & UInt32(controlKey) != 0 { mask.insert(.control) }
+        if hk.modifiers & UInt32(shiftKey) != 0 { mask.insert(.shift) }
+        item.keyEquivalent = key
+        item.keyEquivalentModifierMask = mask
+    }
+
+    /// Carbon keycode → the character a menu keyEquivalent expects.
+    private static func keyEquivalent(for code: UInt16) -> String? {
+        switch Int(code) {
+        case kVK_Space:                        return " "
+        case kVK_Return, kVK_ANSI_KeypadEnter: return "\r"
+        case kVK_Tab:                          return "\t"
+        case kVK_Delete:                       return String(UnicodeScalar(8))
+        case kVK_Escape:                       return String(UnicodeScalar(27))
+        default:                               break
+        }
+        // Letters/digits/punctuation: reuse the recorder's display name.
+        let name = HotkeyRecorder.RecorderButton.keyName(code)
+        return name.count == 1 ? name.lowercased() : nil
     }
 
     // MARK: - Actions
@@ -190,6 +269,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         engine.manualConvertLastWord()
     }
 
+    @objc private func correctText() {
+        Task { @MainActor in RecoveryController.shared.run() }
+    }
+
     @objc private func startDictation() {
         Task { @MainActor in DictationController.shared.toggle() }
     }
@@ -202,7 +285,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // styleMask *after* assigning content makes AppKit re-lay-out the
             // content ignoring the titlebar, sliding it up under the title.
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 560, height: 520),
+                contentRect: NSRect(x: 0, y: 0, width: 560, height: 640),
                 styleMask: [.titled, .closable, .miniaturizable],
                 backing: .buffered, defer: false
             )
@@ -258,8 +341,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         center.onAction(.voiceCancel) {
             Task { @MainActor in DictationController.shared.cancel() }
         }
+        center.onAction(.textCorrection) {
+            Task { @MainActor in RecoveryController.shared.run() }
+        }
         center.register(.manualConvert, hotkey: settings.manualConvertHotkey)
         center.register(.voiceDictation, hotkey: settings.whisperHotkey)
+        center.register(.textCorrection, hotkey: settings.correctionHotkey)
 
         // Re-register when the user changes a shortcut.
         settings.$manualConvertHotkey
@@ -269,6 +356,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.$whisperHotkey
             .dropFirst()
             .sink { center.register(.voiceDictation, hotkey: $0) }
+            .store(in: &cancellables)
+        settings.$correctionHotkey
+            .dropFirst()
+            .sink { center.register(.textCorrection, hotkey: $0) }
             .store(in: &cancellables)
     }
 
