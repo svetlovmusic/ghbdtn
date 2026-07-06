@@ -246,6 +246,7 @@ final class AutoSwitchEngine {
             source: source,
             candidates: layouts,
             sensitivity: settings.sensitivity,
+            minWordLength: settings.minWordLength,
             isCompleteWord: final
         ) else { return }
 

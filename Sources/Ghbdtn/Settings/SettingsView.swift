@@ -79,6 +79,19 @@ private struct DetectionTab: View {
                 Text(sensitivityHint)
                     .font(.caption).foregroundColor(.secondary)
             }
+            Section("Минимальная длина слова") {
+                HStack {
+                    Slider(value: Binding(
+                        get: { Double(settings.minWordLength) },
+                        set: { settings.minWordLength = Int($0.rounded()) }
+                    ), in: 2...6, step: 1)
+                    Text("\(settings.minWordLength) \(lettersWord(settings.minWordLength))")
+                        .monospacedDigit()
+                        .frame(width: 66, alignment: .trailing)
+                }
+                Text("Слова короче автоматически не переключаются — это главный источник ложных срабатываний на коротких словах. Выученные и частотные слова конвертируются всё равно; ручной хоткей длину игнорирует.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
             Section("Когда переключать") {
                 Picker("Триггер", selection: $settings.trigger) {
                     ForEach(ConvertTrigger.allCases) { Text($0.title).tag($0) }
@@ -98,6 +111,14 @@ private struct DetectionTab: View {
         case .cautious: return "Меньше ложных срабатываний, но что-то может пропустить."
         case .balanced: return "Разумный баланс для повседневного набора."
         case .aggressive: return "Ловит почти всё, но иногда может ошибиться."
+        }
+    }
+
+    /// Russian plural for «буква» after a number (2–4 → буквы, иначе букв).
+    private func lettersWord(_ n: Int) -> String {
+        switch n {
+        case 2, 3, 4: return "буквы"
+        default: return "букв"
         }
     }
 }
