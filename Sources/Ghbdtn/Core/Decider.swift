@@ -26,6 +26,7 @@ enum Decider {
                        source: KeyboardLayout,
                        candidates: [KeyboardLayout],
                        sensitivity: Sensitivity,
+                       minWordLength: Int = 2,
                        force: Bool = false,
                        isCompleteWord: Bool = true) -> Decision? {
         let translator = KeyTranslator.shared
@@ -64,6 +65,14 @@ enum Decider {
             }
         }
         guard let best else { return nil }
+
+        // Minimum word length (user-tunable, Settings → Детекция). Short words
+        // are the biggest source of false conversions, so below the floor only
+        // convert when the target is a curated/learned word we explicitly trust;
+        // otherwise leave the word alone. The manual hotkey (force) ignores it.
+        if !force, letters.count < minWordLength, !isKnownWord(best.score) {
+            return nil
+        }
 
         // How much better is the swapped interpretation than what was typed?
         let confident = Self.isConfident(

@@ -103,6 +103,10 @@ final class Settings: ObservableObject {
     // MARK: Detection
     @Published var sensitivity: Sensitivity
     @Published var trigger: ConvertTrigger
+    /// Auto-conversion floor: words shorter than this (in letters) are left
+    /// alone unless the target is a curated/learned word. Cuts short-word false
+    /// positives; the manual hotkey ignores it. Range 2…6.
+    @Published var minWordLength: Int
     /// Bundle identifiers where the auto-switcher is disabled (password fields,
     /// terminals, games, etc.).
     @Published var excludedBundleIDs: [String]
@@ -158,6 +162,7 @@ final class Settings: ObservableObject {
             Keys.showConversionNotifications: true,
             Keys.sensitivity: Sensitivity.balanced.rawValue,
             Keys.trigger: ConvertTrigger.wordBoundary.rawValue,
+            Keys.minWordLength: 4,
             Keys.aiEnabled: false,
             Keys.aiBaseURL: "https://api.openai.com/v1",
             Keys.aiModel: "gpt-4.1-mini",
@@ -180,6 +185,7 @@ final class Settings: ObservableObject {
 
         sensitivity = Sensitivity(rawValue: defaults.string(forKey: Keys.sensitivity) ?? "") ?? .balanced
         trigger = ConvertTrigger(rawValue: defaults.string(forKey: Keys.trigger) ?? "") ?? .wordBoundary
+        minWordLength = max(2, defaults.integer(forKey: Keys.minWordLength))
         excludedBundleIDs = defaults.stringArray(forKey: Keys.excludedBundleIDs) ?? Settings.defaultExclusions
 
         manualConvertHotkey = Settings.decodeHotkey(defaults.data(forKey: Keys.manualConvertHotkey))
@@ -230,6 +236,7 @@ final class Settings: ObservableObject {
         persist($showConversionNotifications) { self.defaults.set($0, forKey: Keys.showConversionNotifications) }
         persist($sensitivity) { self.defaults.set($0.rawValue, forKey: Keys.sensitivity) }
         persist($trigger) { self.defaults.set($0.rawValue, forKey: Keys.trigger) }
+        persist($minWordLength) { self.defaults.set($0, forKey: Keys.minWordLength) }
         persist($excludedBundleIDs) { self.defaults.set($0, forKey: Keys.excludedBundleIDs) }
         persist($manualConvertHotkey) { self.defaults.set(Settings.encodeHotkey($0), forKey: Keys.manualConvertHotkey) }
         persist($whisperHotkey) { self.defaults.set(Settings.encodeHotkey($0), forKey: Keys.whisperHotkey) }
@@ -316,6 +323,7 @@ final class Settings: ObservableObject {
         static let showConversionNotifications = "showConversionNotifications"
         static let sensitivity = "sensitivity"
         static let trigger = "trigger"
+        static let minWordLength = "minWordLength"
         static let excludedBundleIDs = "excludedBundleIDs"
         static let manualConvertHotkey = "manualConvertHotkey"
         static let whisperHotkey = "whisperHotkey"
