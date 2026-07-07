@@ -68,6 +68,57 @@ final class LearnedStore {
         count(word, language, positive: isPositive)
     }
 
+    // MARK: - Editor (Settings → Словарь)
+
+    /// One learned word, for the editor UI.
+    struct Entry: Identifiable {
+        let language: String
+        let word: String
+        let count: Int
+        let positive: Bool
+        var id: String { "\(positive ? "+" : "-")\(language):\(word)" }
+        /// Active = it actually affects conversion (seen ≥ activationCount); a
+        /// lower count is still "learning" and has no effect on typing yet.
+        var isActive: Bool { count >= LearnedStore.activationCount }
+    }
+
+    /// All learned words of one polarity, sorted by language then word.
+    func entries(positive isPositive: Bool) -> [Entry] {
+        lock.lock(); defer { lock.unlock() }
+        let store = isPositive ? positive : negative
+        return store
+            .flatMap { lang, words in
+                words.map { Entry(language: lang, word: $0.key, count: $0.value, positive: isPositive) }
+            }
+            .sorted { ($0.language, $0.word) < ($1.language, $1.word) }
+    }
+
+    /// Remove one learned word (user edit in Settings). Persists; takes effect
+    /// on the next keystroke since reads are live.
+    func remove(word: String, language: String, positive isPositive: Bool) {
+        let w = word.lowercased(), l = language.lowercased()
+        lock.lock()
+        if isPositive {
+            positive[l]?.removeValue(forKey: w)
+            if positive[l]?.isEmpty == true { positive[l] = nil }
+        } else {
+            negative[l]?.removeValue(forKey: w)
+            if negative[l]?.isEmpty == true { negative[l] = nil }
+        }
+        let snap = Snapshot(positive: positive, negative: negative)
+        lock.unlock()
+        persist(snap)
+    }
+
+    /// Remove every learned word of one polarity. Persists.
+    func removeAll(positive isPositive: Bool) {
+        lock.lock()
+        if isPositive { positive = [:] } else { negative = [:] }
+        let snap = Snapshot(positive: positive, negative: negative)
+        lock.unlock()
+        persist(snap)
+    }
+
     // MARK: - Internals
 
     private func count(_ word: String, _ language: String, positive isPositive: Bool) -> Int {
