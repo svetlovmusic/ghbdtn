@@ -8,6 +8,7 @@ struct SettingsView: View {
         TabView {
             GeneralTab().tabItem { Label("Общие", systemImage: "gearshape") }
             DetectionTab().tabItem { Label("Детекция", systemImage: "wand.and.stars") }
+            DictionaryTab().tabItem { Label("Словарь", systemImage: "character.book.closed") }
             HotkeysTab().tabItem { Label("Хоткеи", systemImage: "command") }
             AITab().tabItem { Label("ИИ-слой", systemImage: "brain") }
             VoiceTab().tabItem { Label("Голос", systemImage: "mic") }
@@ -182,6 +183,127 @@ private struct ExclusionEditor: View {
         if let id = NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
            !settings.excludedBundleIDs.contains(id) {
             settings.excludedBundleIDs.append(id)
+        }
+    }
+}
+
+// MARK: - Dictionary (learned words)
+
+/// Viewer/editor for the adaptive word memory (LearnedStore): words the engine
+/// learned to convert toward (positive) and words the user rejected so they are
+/// kept as-typed (negative). Lets the user prune wrong entries.
+private struct DictionaryTab: View {
+    @State private var positive: [LearnedStore.Entry] = []
+    @State private var negative: [LearnedStore.Entry] = []
+    /// non-nil while a "clear all" confirmation is up; the value is the polarity.
+    @State private var clearTarget: Bool?
+
+    var body: some View {
+        Form {
+            Section {
+                Text("Движок запоминает слова из твоих действий: те, что ты вручную дожал хоткеем (их он потом переключает сам), и те, что ты отклонил, стерев автозамену (их он оставляет как есть). Здесь словарь можно просмотреть и убрать лишнее. Слово начинает действовать после \(LearnedStore.activationCount) повторов — до этого помечено «учится».")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+            LearnedSection(
+                title: "Всегда переключать · выучено",
+                entries: positive,
+                emptyText: "Пусто. Дожми слово ручным хоткеем пару раз — и оно начнёт переключаться само.",
+                onDelete: { remove($0, positive: true) },
+                onClear: { clearTarget = true }
+            )
+            LearnedSection(
+                title: "Не переключать · отклонено",
+                entries: negative,
+                emptyText: "Пусто. Сотри автозамену одного слова пару раз — оно попадёт сюда и перестанет переключаться.",
+                onDelete: { remove($0, positive: false) },
+                onClear: { clearTarget = false }
+            )
+        }
+        .formStyle(.grouped)
+        .padding()
+        .onAppear(perform: reload)
+        .confirmationDialog(
+            clearTarget == true
+                ? "Очистить список «Всегда переключать»?"
+                : "Очистить список «Не переключать»?",
+            isPresented: Binding(get: { clearTarget != nil },
+                                 set: { if !$0 { clearTarget = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Очистить", role: .destructive) {
+                if let polarity = clearTarget { clear(positive: polarity) }
+                clearTarget = nil
+            }
+            Button("Отмена", role: .cancel) { clearTarget = nil }
+        }
+    }
+
+    private func reload() {
+        positive = LanguageScorer.shared.learnedEntries(positive: true)
+        negative = LanguageScorer.shared.learnedEntries(positive: false)
+    }
+
+    private func remove(_ entry: LearnedStore.Entry, positive isPositive: Bool) {
+        LanguageScorer.shared.removeLearned(word: entry.word, language: entry.language, positive: isPositive)
+        reload()
+    }
+
+    private func clear(positive isPositive: Bool) {
+        LanguageScorer.shared.clearLearned(positive: isPositive)
+        reload()
+    }
+}
+
+private struct LearnedSection: View {
+    let title: String
+    let entries: [LearnedStore.Entry]
+    let emptyText: String
+    let onDelete: (LearnedStore.Entry) -> Void
+    let onClear: () -> Void
+
+    var body: some View {
+        Section {
+            if entries.isEmpty {
+                Text(emptyText).font(.caption).foregroundColor(.secondary)
+            } else {
+                ForEach(entries) { entry in
+                    LearnedRow(entry: entry) { onDelete(entry) }
+                }
+                HStack {
+                    Spacer()
+                    Button("Очистить всё", action: onClear).controlSize(.small)
+                }
+            }
+        } header: {
+            Text(title)
+        }
+    }
+}
+
+private struct LearnedRow: View {
+    let entry: LearnedStore.Entry
+    let onDelete: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(entry.language.uppercased())
+                .font(.system(.caption2, design: .monospaced))
+                .padding(.horizontal, 5).padding(.vertical, 1)
+                .background(Color.secondary.opacity(0.15))
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+            Text(entry.word)
+                .textSelection(.enabled)
+            if !entry.isActive {
+                Text("учится \(entry.count)/\(LearnedStore.activationCount)")
+                    .font(.caption2).foregroundColor(.secondary)
+            }
+            Spacer(minLength: 8)
+            Button(action: onDelete) {
+                Image(systemName: "minus.circle.fill")
+            }
+            .buttonStyle(.borderless)
+            .foregroundColor(.secondary)
+            .help("Удалить из словаря")
         }
     }
 }

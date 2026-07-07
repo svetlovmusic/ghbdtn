@@ -151,6 +151,23 @@ final class LanguageScorer {
         learned.rawCount(word, language: language, positive: positive)
     }
 
+    // MARK: - Learned-word editor (Settings → Словарь)
+
+    /// Snapshot of learned words of one polarity, for the editor UI.
+    func learnedEntries(positive: Bool) -> [LearnedStore.Entry] {
+        learned.entries(positive: positive)
+    }
+
+    /// Remove one learned word (user edit). Takes effect on the next keystroke.
+    func removeLearned(word: String, language: String, positive: Bool) {
+        learned.remove(word: word, language: language, positive: positive)
+    }
+
+    /// Clear every learned word of one polarity.
+    func clearLearned(positive: Bool) {
+        learned.removeAll(positive: positive)
+    }
+
     /// A word worth storing: ≥2 letters, only letters plus internal
     /// apostrophes/hyphens, and written in the language's own script.
     private func isCleanWord(_ word: String, language: String) -> Bool {
