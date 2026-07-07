@@ -220,6 +220,13 @@ final class LanguageScorer {
         if let sep = core.firstIndex(where: { $0 == "'" || $0 == "’" || $0 == "-" }) {
             guard core.distance(from: core.startIndex, to: sep) >= 2 else { return false }
         }
+        // NSSpellChecker rubber-stamps many bare 2-letter tokens that aren't real
+        // words ("pf", "ls"), so a 2-letter core is only trusted when it is also a
+        // curated common word — genuine 2-letter words ("in"/"он") are curated.
+        // Fixes issue #3: юзаю → ".pf." (ю on the '.' key; core "pf" false-accepted).
+        if core.filter({ $0.isLetter }).count < 3, !isCommonWord(core, language: language) {
+            return false
+        }
         // Map plain code to a concrete dictionary if needed ("ru" → "ru", "en" → "en").
         guard hasSpellDictionary(for: language) else { return false }
         let range = spellChecker.checkSpelling(
