@@ -71,6 +71,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                           body: "Разрешите Ghbdtn в Настройках → Конфиденциальность → Универсальный доступ.")
         }
         updateStatusIcon()
+        // Prime spellchecker dictionaries off the first-keystroke critical path.
+        let langs = LayoutManager.shared.enabledLayouts().compactMap { $0.primaryLanguage }
+        LanguageScorer.shared.warmUp(languages: langs + ["en", "ru"])
     }
 
     private func observeConversions() {

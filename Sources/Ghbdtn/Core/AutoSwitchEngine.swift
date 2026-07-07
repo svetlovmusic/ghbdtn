@@ -40,6 +40,13 @@ final class AutoSwitchEngine {
     /// plus its source language, i.e. "the user rejected converting this".
     private var lastAutoConversion: (text: String, sourceLang: String)?
 
+    /// True when the last conversion's target is a curated common word (e.g.
+    /// "привет"). These flagship words must never be self-disabled by a
+    /// reflexive backspace, so both the session veto and negative learning skip
+    /// them — otherwise normal testing silently teaches the engine to stop
+    /// converting its own headline case.
+    private var lastConversionProtected = false
+
     /// Monotonic counter bumped on every keyboard/navigation event. Async
     /// deciders (the cloud-AI layer) capture it before their network round-trip
     /// and refuse to inject if it changed — i.e. the user typed something since,
@@ -148,18 +155,21 @@ final class AutoSwitchEngine {
             // rejecting it. Veto that exact token so it isn't auto-converted
             // again this session (the safe direction: at worst we skip a
             // conversion they wanted, recoverable via the manual hotkey).
-            if let rejected = lastConversionOriginal {
+            if let rejected = lastConversionOriginal, !lastConversionProtected {
                 buffer.veto(rejected)
             }
             // Persistent negative learning: repeatedly rejecting the same auto
             // conversion (≥ LearnedStore.activationCount) makes the engine keep
             // that word for good. One rejection only vetoes it this session.
-            if let auto = lastAutoConversion, !auto.sourceLang.isEmpty {
+            // Curated flagship words are exempt — never let a backspace teach
+            // the engine to stop converting e.g. ghbdtn → привет.
+            if let auto = lastAutoConversion, !auto.sourceLang.isEmpty, !lastConversionProtected {
                 LanguageScorer.shared.learnNegative(word: auto.text, language: auto.sourceLang)
             }
             buffer.backspace()
             lastConversionOriginal = nil
             lastAutoConversion = nil
+            lastConversionProtected = false
 
         case let .key(stroke, hasCommandLikeModifiers):
             if hasCommandLikeModifiers {
@@ -302,6 +312,10 @@ final class AutoSwitchEngine {
         // being backspaced is the user changing their own mind, not the engine
         // being wrong.
         lastAutoConversion = forced ? nil : (original, decision.source.primaryLanguage ?? "")
+        lastConversionProtected = {
+            guard let lang = target.primaryLanguage, !lang.isEmpty else { return false }
+            return LanguageScorer.shared.isCommonWord(corrected, language: lang)
+        }()
 
         // Learn only from *trustworthy* corrections: a word the target
         // language's dictionary actually recognizes. Learning from every

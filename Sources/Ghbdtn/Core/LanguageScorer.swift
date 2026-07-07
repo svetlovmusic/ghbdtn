@@ -1,6 +1,20 @@
 import Foundation
 import AppKit
 
+/// A memoized, lazily-computed Bool: the closure runs at most once, on first
+/// read. Lets `LanguageScorer.Score` defer its NSSpellChecker lookup so the
+/// per-word hot path (on the event-tap thread) skips the synchronous spellcheck
+/// entirely whenever a cheaper signal (curated/learned word) already decides.
+private final class LazyBool {
+    private var cached: Bool?
+    private let compute: () -> Bool
+    init(_ compute: @escaping () -> Bool) { self.compute = compute }
+    var value: Bool {
+        if let cached { return cached }
+        let v = compute(); cached = v; return v
+    }
+}
+
 /// Scores how plausible a string is as real text in a given language.
 ///
 /// Two signals are combined:
@@ -23,8 +37,11 @@ final class LanguageScorer {
         let language: String
         /// 0…1: fraction of adjacent letter pairs that are common in the language.
         let bigramCoverage: Double
-        /// The spellchecker recognizes the exact word.
-        let isDictionaryWord: Bool
+        /// The spellchecker recognizes the exact word. Evaluated lazily — the
+        /// NSSpellChecker round-trip only happens if a caller actually reads it,
+        /// so the confident curated/learned path pays no spellcheck at all.
+        fileprivate let _isDictionaryWord: LazyBool
+        var isDictionaryWord: Bool { _isDictionaryWord.value }
         /// The word is in our curated frequent-words list for the language.
         /// This is the override for the OS spellchecker's rare false-accepts
         /// (e.g. it wrongly calls the abracadabra "ghbdtn" a valid English word).
@@ -88,7 +105,7 @@ final class LanguageScorer {
             text: text,
             language: language,
             bigramCoverage: bigramCoverage(lower, language: language),
-            isDictionaryWord: isDictionaryWord(text, language: language),
+            _isDictionaryWord: LazyBool { [self] in isDictionaryWord(text, language: language) },
             isCommonWord: isCommonWord(text, language: language),
             scriptMatch: scriptMatches(lower, language: language),
             ngramPercentile: model?.percentile(of: lower, complete: completeWord),
@@ -96,6 +113,18 @@ final class LanguageScorer {
             isLearnedWord: learned.isLearned(lower, language: lang),
             isKeepWord: learned.isKeep(lower, language: lang)
         )
+    }
+
+    /// Prime the OS spellchecker dictionaries for the given languages so the
+    /// first live word doesn't pay per-language cold-start latency on the
+    /// event-tap (main) thread. Cheap and idempotent; call once at launch.
+    func warmUp(languages: [String]) {
+        for lang in Set(languages.map { $0.lowercased() }) where hasSpellDictionary(for: lang) {
+            _ = spellChecker.checkSpelling(
+                of: "aa", startingAt: 0, language: lang, wrap: false,
+                inSpellDocumentWithTag: spellDocTag, wordCount: nil
+            )
+        }
     }
 
     // MARK: - Adaptive learning
