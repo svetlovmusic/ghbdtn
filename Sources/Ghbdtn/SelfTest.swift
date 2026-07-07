@@ -151,6 +151,15 @@ enum SelfTest {
             Case(keys: "it.", source: en, expectConvert: false, note: "it. (real word + period) → keep, not шею"),
             Case(keys: "at.", source: en, expectConvert: false, note: "at. → keep, not фею"),
 
+            // -- Source-language veto: a real word of the source language
+            //    (dictionary + n-gram agree) must never convert, even though no
+            //    curated list knows it — inflected loanwords like "гите" (git)
+            //    or "докере" (docker). Regression guard: гите → "ubnt" via the
+            //    cloud-AI escalation path.
+            Case(keys: "ubnt", source: ru, expectConvert: false, note: "гите (loanword form) → keep, not ubnt"),
+            Case(keys: "ljrtht", source: ru, expectConvert: false, note: "докере → keep, not ljrtht"),
+            Case(keys: "herb", source: en, expectConvert: false, note: "herb → keep, not руки"),
+
             // -- Mid-word (live-trigger) evaluation on word prefixes.
             Case(keys: "ghjuhfvvb", source: en, expectConvert: true, complete: false,
                  note: "prefix: ghjuhfvvb → программи (партиал)"),
@@ -180,10 +189,85 @@ enum SelfTest {
         print("\n\(pass)/\(cases.count) passed")
 
         let learnOK = runLearningTests(layouts: layouts)
+        let escalationOK = runEscalationTests(layouts: layouts)
 
         measureLatency()
         let voiceOK = voicePipelineChecks()
-        return pass == cases.count && learnOK && voiceOK
+        return pass == cases.count && learnOK && escalationOK && voiceOK
+    }
+
+    // MARK: - Cloud escalation containment
+
+    /// The engine escalates any non-nil low-confidence Decision to the cloud-AI
+    /// layer, so for a correctly-typed word `decide` must return NIL — an
+    /// unconfident Decision would ship the word to the network and let a
+    /// context-free model guess (the гите → "ubnt" bug). Also exercises the
+    /// AI-verdict plausibility gate that backstops the words that do escalate.
+    private static func runEscalationTests(layouts: [KeyboardLayout]) -> Bool {
+        guard let en = layouts.first(where: { ($0.primaryLanguage ?? "") == "en" || $0.id.contains("ABC") }),
+              let ru = layouts.first(where: { ($0.primaryLanguage ?? "") == "ru" }) else { return true }
+        var pass = 0, total = 0
+        func check(_ cond: Bool, _ desc: String) {
+            total += 1; if cond { pass += 1 }
+            print("\(cond ? "✅" : "❌") [escalation] \(desc)")
+        }
+        func decision(_ keys: String, _ src: KeyboardLayout) -> Decider.Decision? {
+            Decider.decide(strokes: strokes(for: keys), source: src,
+                           candidates: layouts, sensitivity: .balanced)
+        }
+        print("\n-- Cloud escalation containment --")
+
+        // Source-vouched words: nil, not a low-confidence decision.
+        check(decision("ubnt", ru) == nil, "гите: dict+ngram vouch → no escalation")
+        check(decision("ljrtht", ru) == nil, "докере: dict+ngram vouch → no escalation")
+        check(decision("herb", en) == nil, "herb: dict+ngram vouch → no escalation")
+        check(decision("ghbdtn", ru) == nil, "привет (curated) → no escalation")
+        check(decision("hello", en) == nil, "hello (curated) → no escalation")
+
+        // Wrong-layout junk keeps converting locally, or stays AI-eligible.
+        check(decision("ghbdtn", en)?.confident == true, "ghbdtn → привет still confident")
+        check(decision("hello", ru)?.confident == true, "руддщ → hello still confident")
+        check({ let d = decision("sdfgsdfg", en); return d != nil && d?.confident == false }(),
+              "keyboard mash: not vouched → still AI-eligible")
+
+        // The veto must hold at every sensitivity (aggressive has the loosest
+        // thresholds) — гите scores 0.116, far above all of them.
+        check(Decider.decide(strokes: strokes(for: "ubnt"), source: ru,
+                             candidates: layouts, sensitivity: .aggressive) == nil,
+              "гите: no escalation at aggressive either")
+
+        // Recovery for a vouched word: the manual hotkey must still convert it
+        // (force bypasses the veto), and two forced conversions must teach the
+        // engine to auto-convert it from then on (the curatedTarget exemption
+        // lets a learned candidate beat the veto).
+        check(Decider.decide(strokes: strokes(for: "herb"), source: en,
+                             candidates: layouts, sensitivity: .aggressive, force: true) != nil,
+              "herb: manual hotkey bypasses the veto")
+        check(decision("herb", en)?.confident != true, "before teaching: herb stays put")
+        LanguageScorer.shared.learnPositive(word: "руки", language: "ru")
+        LanguageScorer.shared.learnPositive(word: "руки", language: "ru")
+        check(decision("herb", en)?.confident == true,
+              "after 2× force: herb → руки beats the veto (learned target)")
+
+        // AI-verdict gate: refutable corrected text must be refused; text the
+        // local signals cannot judge must pass (the cloud layer exists for it).
+        check(!Decider.aiVerdictPlausible("ubnt", language: "en"),
+              "gate: \"ubnt\" refused (gibberish in en)")
+        check(!Decider.aiVerdictPlausible("ыващпыващп", language: "ru"),
+              "gate: Cyrillic mash refused")
+        check(!Decider.aiVerdictPlausible("привет", language: "en"),
+              "gate: wrong script refused")
+        check(Decider.aiVerdictPlausible("привет", language: "ru"),
+              "gate: real word passes")
+        check(Decider.aiVerdictPlausible("figma", language: "en"),
+              "gate: OOV brand passes (ngram)")
+        check(Decider.aiVerdictPlausible("ffmpeg", language: "en"),
+              "gate: low-ngram brand still passes")
+        check(Decider.aiVerdictPlausible("npm", language: "en"),
+              "gate: short unscoreable word passes (abstain)")
+
+        print("\(pass)/\(total) escalation checks passed")
+        return pass == total
     }
 
     // MARK: - Adaptive learning
