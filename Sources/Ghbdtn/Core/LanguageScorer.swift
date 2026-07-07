@@ -168,6 +168,34 @@ final class LanguageScorer {
         learned.removeAll(positive: positive)
     }
 
+    /// Manually add a learned word (Settings editor); active immediately.
+    func addLearned(word: String, language: String, positive: Bool) {
+        learned.add(word: word, language: language, positive: positive)
+    }
+
+    /// The opposite-layout twin of a word — what the same physical keys would
+    /// produce in the other enabled layout — plus that layout's language.
+    /// Powers the editor's "набрано → результат" display so a stored token like
+    /// "bcghfdm" is shown next to its readable twin "исправь". Returns nil when
+    /// no other layout is enabled or the characters don't map. If several other
+    /// layouts are enabled, the twin that reads as a real word wins.
+    func layoutTwin(of word: String, language: String) -> (text: String, language: String)? {
+        let layouts = LayoutManager.shared.enabledLayouts()
+        let lang = language.lowercased()
+        guard let source = layouts.first(where: { ($0.primaryLanguage ?? "") == lang })
+            ?? layouts.first(where: { $0.id.lowercased().contains(lang) }) else { return nil }
+        var best: (text: String, language: String, rank: Int)?
+        for target in layouts where target.id != source.id {
+            let twin = KeyTranslator.shared.convert(word, from: source, to: target)
+            guard twin != word, !twin.isEmpty else { continue }
+            let tlang = target.primaryLanguage ?? "?"
+            let s = score(twin, language: tlang)
+            let rank = (s.isDictionaryWord || s.isCommonWord || s.isLearnedWord) ? 2 : 1
+            if best == nil || rank > best!.rank { best = (twin, tlang, rank) }
+        }
+        return best.map { ($0.text, $0.language) }
+    }
+
     /// A word worth storing: ≥2 letters, only letters plus internal
     /// apostrophes/hyphens, and written in the language's own script.
     private func isCleanWord(_ word: String, language: String) -> Bool {

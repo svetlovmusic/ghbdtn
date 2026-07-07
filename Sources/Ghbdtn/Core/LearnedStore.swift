@@ -119,6 +119,23 @@ final class LearnedStore {
         persist(snap)
     }
 
+    /// Manually add a learned word at the activation threshold so it takes
+    /// effect immediately (a user adding it in Settings means it, unlike the
+    /// implicit count-to-2 learning from repeated corrections). Persists.
+    func add(word: String, language: String, positive isPositive: Bool) {
+        let w = word.lowercased(), l = language.lowercased()
+        guard !w.isEmpty else { return }
+        lock.lock()
+        if isPositive {
+            positive[l, default: [:]][w] = max(positive[l]?[w] ?? 0, Self.activationCount)
+        } else {
+            negative[l, default: [:]][w] = max(negative[l]?[w] ?? 0, Self.activationCount)
+        }
+        let snap = Snapshot(positive: positive, negative: negative)
+        lock.unlock()
+        persist(snap)
+    }
+
     // MARK: - Internals
 
     private func count(_ word: String, _ language: String, positive isPositive: Bool) -> Int {
