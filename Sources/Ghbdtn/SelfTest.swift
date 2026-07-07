@@ -150,6 +150,11 @@ enum SelfTest {
             // not read as junk and flip to the other layout: "it." → шею.
             Case(keys: "it.", source: en, expectConvert: false, note: "it. (real word + period) → keep, not шею"),
             Case(keys: "at.", source: en, expectConvert: false, note: "at. → keep, not фею"),
+            // Issue #3: a correct RU word whose EN twin is punctuation + a
+            // spellchecker-accepted 2-letter core must NOT convert. "юзаю"
+            // (ю on the '.' key) → ".pf." — ".pf." is not a word, whatever the
+            // tokenizing spellchecker thinks of its "pf" core.
+            Case(keys: ".pf.", source: ru, expectConvert: false, note: "юзаю (slang) → keep, not .pf. (issue #3)"),
 
             // -- Source-language veto: a real word of the source language
             //    (dictionary + n-gram agree) must never convert, even though no

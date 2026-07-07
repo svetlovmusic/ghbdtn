@@ -18,14 +18,16 @@ final class WordBuffer {
     private(set) var lastWordLayoutID: String?
     private(set) var lastWordDelimiterChar: Character?
 
-    /// Words the user "took back" (converted, then immediately reverted or
-    /// retyped) → each mapped to when it was vetoed. Entries expire after
-    /// `vetoTTL` and the map is capped, so a long-running session can't
-    /// accumulate an ever-growing veto list that silently stops converting more
-    /// and more words the longer the app stays open — previously only a restart
-    /// cleared it, which is exactly the "degrades over a day" complaint.
-    private var vetoed: [String: Date] = [:]
+    /// Words the user "took back" → (rejection count, last time). A word is only
+    /// vetoed after TWO rejections (matching LearnedStore.activationCount): a
+    /// single backspace right after a conversion is usually just editing — or
+    /// demoing — it, not a rejection. One-shot vetoing wrongly killed a correct
+    /// conversion after a single backspace and left it dead in every window for
+    /// the rest of the session (issue #2). Counts expire after `vetoTTL` and the
+    /// map is capped, so a long-running session can't accumulate.
+    private var vetoed: [String: (count: Int, at: Date)] = [:]
     private static let vetoTTL: TimeInterval = 20 * 60
+    private static let vetoThreshold = 2
     private static let vetoCap = 500
 
     var isEmpty: Bool { current.isEmpty }
@@ -87,26 +89,29 @@ final class WordBuffer {
     func veto(_ word: String) {
         let key = word.lowercased()
         let now = Date()
-        vetoed[key] = now
+        // Carry a prior count forward only if it hasn't expired, so stale
+        // rejections don't accumulate toward the threshold across a long session.
+        let prior = vetoed[key].map { now.timeIntervalSince($0.at) <= Self.vetoTTL ? $0.count : 0 } ?? 0
+        vetoed[key] = (prior + 1, now)
         if vetoed.count > Self.vetoCap { pruneVetoed(now: now) }
     }
 
     func isVetoed(_ word: String) -> Bool {
         let key = word.lowercased()
-        guard let at = vetoed[key] else { return false }
-        guard Date().timeIntervalSince(at) <= Self.vetoTTL else {
+        guard let entry = vetoed[key] else { return false }
+        guard Date().timeIntervalSince(entry.at) <= Self.vetoTTL else {
             vetoed.removeValue(forKey: key)   // expired — let it convert again
             return false
         }
-        return true
+        return entry.count >= Self.vetoThreshold
     }
 
     /// Drop expired entries; if still over the cap, evict the oldest.
     private func pruneVetoed(now: Date) {
-        vetoed = vetoed.filter { now.timeIntervalSince($0.value) <= Self.vetoTTL }
+        vetoed = vetoed.filter { now.timeIntervalSince($0.value.at) <= Self.vetoTTL }
         if vetoed.count > Self.vetoCap {
             let overflow = vetoed.count - Self.vetoCap
-            for key in vetoed.sorted(by: { $0.value < $1.value }).prefix(overflow).map(\.key) {
+            for key in vetoed.sorted(by: { $0.value.at < $1.value.at }).prefix(overflow).map(\.key) {
                 vetoed.removeValue(forKey: key)
             }
         }
