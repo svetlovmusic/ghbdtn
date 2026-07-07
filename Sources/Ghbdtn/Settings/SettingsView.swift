@@ -191,31 +191,39 @@ private struct ExclusionEditor: View {
 
 /// Viewer/editor for the adaptive word memory (LearnedStore): words the engine
 /// learned to convert toward (positive) and words the user rejected so they are
-/// kept as-typed (negative). Lets the user prune wrong entries.
+/// kept as-typed (negative). Each row also shows the opposite-layout twin, so a
+/// stored token like "bcghfdm" reads as "bcghfdm → исправь". Lets the user add,
+/// prune, or clear entries.
 private struct DictionaryTab: View {
-    @State private var positive: [LearnedStore.Entry] = []
-    @State private var negative: [LearnedStore.Entry] = []
+    @State private var positive: [LearnedRowModel] = []
+    @State private var negative: [LearnedRowModel] = []
     /// non-nil while a "clear all" confirmation is up; the value is the polarity.
     @State private var clearTarget: Bool?
 
     var body: some View {
         Form {
             Section {
-                Text("Движок запоминает слова из твоих действий: те, что ты вручную дожал хоткеем (их он потом переключает сам), и те, что ты отклонил, стерев автозамену (их он оставляет как есть). Здесь словарь можно просмотреть и убрать лишнее. Слово начинает действовать после \(LearnedStore.activationCount) повторов — до этого помечено «учится».")
+                Text("Движок запоминает слова из твоих действий: те, что ты вручную дожал хоткеем (их он потом переключает сам), и те, что ты отклонил (их он оставляет как есть). Рядом с каждым словом — как оно выглядит в другой раскладке, чтобы было видно, что во что превращается. Слово действует после \(LearnedStore.activationCount) повторов; добавленное вручную — сразу.")
                     .font(.caption).foregroundColor(.secondary)
             }
             LearnedSection(
                 title: "Всегда переключать · выучено",
-                entries: positive,
-                emptyText: "Пусто. Дожми слово ручным хоткеем пару раз — и оно начнёт переключаться само.",
+                rows: positive,
+                languages: Self.enabledLanguages,
+                emptyText: "Пусто. Дожми слово ручным хоткеем пару раз — или добавь вручную ниже.",
+                addPrompt: "слово, к которому переключать",
                 onDelete: { remove($0, positive: true) },
+                onAdd: { add($0, language: $1, positive: true) },
                 onClear: { clearTarget = true }
             )
             LearnedSection(
                 title: "Не переключать · отклонено",
-                entries: negative,
-                emptyText: "Пусто. Сотри автозамену одного слова пару раз — оно попадёт сюда и перестанет переключаться.",
+                rows: negative,
+                languages: Self.enabledLanguages,
+                emptyText: "Пусто. Сотри автозамену слова пару раз — или добавь вручную ниже.",
+                addPrompt: "слово, которое не трогать",
                 onDelete: { remove($0, positive: false) },
+                onAdd: { add($0, language: $1, positive: false) },
                 onClear: { clearTarget = false }
             )
         }
@@ -238,13 +246,27 @@ private struct DictionaryTab: View {
         }
     }
 
-    private func reload() {
-        positive = LanguageScorer.shared.learnedEntries(positive: true)
-        negative = LanguageScorer.shared.learnedEntries(positive: false)
+    /// Distinct primary languages of the enabled layouts (for the add picker).
+    private static var enabledLanguages: [String] {
+        var seen = Set<String>(), out = [String]()
+        for layout in LayoutManager.shared.enabledLayouts() {
+            if let lang = layout.primaryLanguage, seen.insert(lang).inserted { out.append(lang) }
+        }
+        return out.isEmpty ? ["ru", "en"] : out
     }
 
-    private func remove(_ entry: LearnedStore.Entry, positive isPositive: Bool) {
-        LanguageScorer.shared.removeLearned(word: entry.word, language: entry.language, positive: isPositive)
+    private func reload() {
+        positive = LanguageScorer.shared.learnedEntries(positive: true).map(LearnedRowModel.init)
+        negative = LanguageScorer.shared.learnedEntries(positive: false).map(LearnedRowModel.init)
+    }
+
+    private func remove(_ row: LearnedRowModel, positive isPositive: Bool) {
+        LanguageScorer.shared.removeLearned(word: row.entry.word, language: row.entry.language, positive: isPositive)
+        reload()
+    }
+
+    private func add(_ word: String, language: String, positive isPositive: Bool) {
+        LanguageScorer.shared.addLearned(word: word, language: language, positive: isPositive)
         reload()
     }
 
@@ -254,21 +276,75 @@ private struct DictionaryTab: View {
     }
 }
 
+/// One editor row: the stored entry plus its precomputed other-layout twin,
+/// laid out as набрано → результат. For "отклонённые" the result side is dimmed —
+/// it is what the word WOULD become if it weren't kept as-typed.
+private struct LearnedRowModel: Identifiable {
+    struct Token { let word: String; let lang: String }
+    let entry: LearnedStore.Entry
+    let left: Token
+    let right: Token?
+    let rightSuppressed: Bool
+    var id: String { entry.id }
+
+    init(_ entry: LearnedStore.Entry) {
+        self.entry = entry
+        let stored = Token(word: entry.word, lang: entry.language)
+        let twin = LanguageScorer.shared.layoutTwin(of: entry.word, language: entry.language)
+            .map { Token(word: $0.text, lang: $0.language) }
+        if entry.positive {
+            // Stored word is the target (real word); the twin is the as-typed side.
+            if let twin { left = twin; right = stored } else { left = stored; right = nil }
+            rightSuppressed = false
+        } else {
+            // Stored word is kept as-typed; the twin is the suppressed conversion.
+            left = stored; right = twin; rightSuppressed = true
+        }
+    }
+}
+
 private struct LearnedSection: View {
     let title: String
-    let entries: [LearnedStore.Entry]
+    let rows: [LearnedRowModel]
+    let languages: [String]
     let emptyText: String
-    let onDelete: (LearnedStore.Entry) -> Void
+    let addPrompt: String
+    let onDelete: (LearnedRowModel) -> Void
+    let onAdd: (String, String) -> Void
     let onClear: () -> Void
+
+    @State private var newWord = ""
+    @State private var newLang = ""
 
     var body: some View {
         Section {
-            if entries.isEmpty {
+            if rows.isEmpty {
                 Text(emptyText).font(.caption).foregroundColor(.secondary)
             } else {
-                ForEach(entries) { entry in
-                    LearnedRow(entry: entry) { onDelete(entry) }
+                ForEach(rows) { row in
+                    LearnedRow(row: row) { onDelete(row) }
                 }
+            }
+
+            Divider()
+
+            // Empty title + prompt keeps the placeholder inside the field (a
+            // non-empty TextField title is pulled out as a leading label by the
+            // grouped Form style — same trick as ExclusionEditor).
+            HStack(spacing: 8) {
+                Picker("", selection: langBinding) {
+                    ForEach(languages, id: \.self) { Text($0.uppercased()).tag($0) }
+                }
+                .labelsHidden()
+                .fixedSize()
+                TextField(text: $newWord, prompt: Text(addPrompt)) { Text("Слово") }
+                    .textFieldStyle(.roundedBorder)
+                    .labelsHidden()
+                    .onSubmit(commit)
+                Button("Добавить", action: commit).disabled(trimmed.isEmpty)
+            }
+
+            if !rows.isEmpty {
                 HStack {
                     Spacer()
                     Button("Очистить всё", action: onClear).controlSize(.small)
@@ -278,23 +354,34 @@ private struct LearnedSection: View {
             Text(title)
         }
     }
+
+    private var trimmed: String { newWord.trimmingCharacters(in: .whitespaces) }
+    private var langBinding: Binding<String> {
+        Binding(get: { newLang.isEmpty ? (languages.first ?? "ru") : newLang },
+                set: { newLang = $0 })
+    }
+    private func commit() {
+        let word = trimmed
+        guard !word.isEmpty else { return }
+        onAdd(word, langBinding.wrappedValue)
+        newWord = ""
+    }
 }
 
 private struct LearnedRow: View {
-    let entry: LearnedStore.Entry
+    let row: LearnedRowModel
     let onDelete: () -> Void
 
     var body: some View {
-        HStack(spacing: 8) {
-            Text(entry.language.uppercased())
-                .font(.system(.caption2, design: .monospaced))
-                .padding(.horizontal, 5).padding(.vertical, 1)
-                .background(Color.secondary.opacity(0.15))
-                .clipShape(RoundedRectangle(cornerRadius: 4))
-            Text(entry.word)
-                .textSelection(.enabled)
-            if !entry.isActive {
-                Text("учится \(entry.count)/\(LearnedStore.activationCount)")
+        HStack(spacing: 6) {
+            token(row.left, secondary: false)
+            if let right = row.right {
+                Image(systemName: "arrow.right")
+                    .font(.caption2).foregroundColor(.secondary)
+                token(right, secondary: row.rightSuppressed)
+            }
+            if !row.entry.isActive {
+                Text("· учится \(row.entry.count)/\(LearnedStore.activationCount)")
                     .font(.caption2).foregroundColor(.secondary)
             }
             Spacer(minLength: 8)
@@ -304,6 +391,19 @@ private struct LearnedRow: View {
             .buttonStyle(.borderless)
             .foregroundColor(.secondary)
             .help("Удалить из словаря")
+        }
+    }
+
+    private func token(_ t: LearnedRowModel.Token, secondary: Bool) -> some View {
+        HStack(spacing: 4) {
+            Text(t.lang.uppercased())
+                .font(.system(.caption2, design: .monospaced))
+                .padding(.horizontal, 4).padding(.vertical, 1)
+                .background(Color.secondary.opacity(0.15))
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+            Text(t.word)
+                .textSelection(.enabled)
+                .foregroundColor(secondary ? .secondary : .primary)
         }
     }
 }
