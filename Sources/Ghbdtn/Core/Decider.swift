@@ -74,6 +74,33 @@ enum Decider {
             return nil
         }
 
+        // The source language vouches for the as-typed word: it is curated/
+        // learned, or the OS dictionary recognizes it AND the n-gram layer does
+        // not score it at gibberish level. Inflected loanwords no curated list
+        // can enumerate ("гите", "докере") land here. Returning nil — rather
+        // than a low-confidence Decision — matters: the caller escalates
+        // low-confidence decisions to the cloud layer, whose context-free guess
+        // can override a perfectly correct word (гите → "ubnt"). Neither signal
+        // alone suffices: the dictionary false-accepts ~1 in 13 abracadabras
+        // ("ghbdtn" is "English" to it) and the n-gram alone has rare-word
+        // flukes; wrong-layout junk reliably fails one of the two. This can
+        // never block a local confident conversion: every rule in isConfident
+        // already requires the typed side to fail one of these signals. A
+        // curated/learned candidate still converts (checked above the veto) and
+        // the manual hotkey (force) overrides everything.
+        //
+        // Complete words only: escalation happens solely at a word boundary
+        // (the engine requires `final`), so in live mode nil and an unconfident
+        // Decision are indistinguishable to the caller — but the dictionary leg
+        // would pay a synchronous spellcheck on the event-tap thread on every
+        // keystroke of ordinary correct typing (the exact regression class that
+        // once caused dropped keys). Skip it there.
+        let curatedTarget = isKnownWord(best.score) && !isKnownWord(typedScore)
+        if !force, isCompleteWord, !curatedTarget,
+           sourceVouches(for: typedScore, sensitivity: sensitivity, isCompleteWord: isCompleteWord) {
+            return nil
+        }
+
         // How much better is the swapped interpretation than what was typed?
         let confident = Self.isConfident(
             typed: typedScore,
@@ -119,6 +146,45 @@ enum Decider {
     /// Both are trusted equally and above the OS dictionary's judgement.
     private static func isKnownWord(_ s: LanguageScorer.Score) -> Bool {
         s.isCommonWord || s.isLearnedWord
+    }
+
+    /// Does the source language itself vouch for the as-typed word? Curated and
+    /// learned words always do. Otherwise require agreement of two independent
+    /// signals: the n-gram percentile clear of the sensitivity's gibberish
+    /// threshold (checked first — it is precomputed, whereas isDictionaryWord
+    /// pays a lazy synchronous spellcheck) AND the OS dictionary.
+    private static func sourceVouches(for typed: LanguageScorer.Score,
+                                      sensitivity: Sensitivity,
+                                      isCompleteWord: Bool) -> Bool {
+        if isKnownWord(typed) { return true }
+        let t = sensitivity.ngramThresholds(completeWord: isCompleteWord)
+        guard let p = typed.ngramPercentile, p > t.maxTyped else { return false }
+        return typed.isDictionaryWord
+    }
+
+    /// Words the AI proposes below this n-gram percentile are refuted as
+    /// hallucinations. A tripwire against confident nonsense, NOT a
+    /// plausibility requirement: the cloud layer exists precisely for words no
+    /// local signal recognizes, so the bar sits just above the observed
+    /// hallucination ("ubnt" 0.0015) and below legitimate low-ngram brands
+    /// ("ffmpeg" 0.0023, "kubectl" 0.0072). Deliberately NOT tied to the
+    /// sensitivity setting — reusing maxTyped would make the cautious mode's
+    /// gate the laxest, inverting the user's risk knob.
+    private static let aiGibberishPercentile = 0.002
+
+    /// Sanity gate for cloud-AI verdicts: refuse corrected text the local
+    /// signals can positively refute — wrong script, or an n-gram score at
+    /// hallucination level ("ubnt") when no dictionary/curated/learned signal
+    /// vouches for it. When the n-gram model abstains (short word, chars
+    /// outside its alphabet, no model for the language) the gate abstains too:
+    /// blocking everything it cannot score would kill the cloud layer for the
+    /// very cases it exists for.
+    static func aiVerdictPlausible(_ text: String, language: String) -> Bool {
+        let score = LanguageScorer.shared.score(text, language: language, completeWord: true)
+        guard score.scriptMatch else { return false }
+        if isKnownWord(score) || score.isDictionaryWord { return true }
+        guard let p = score.ngramPercentile else { return true }
+        return p > aiGibberishPercentile
     }
 
     /// The core heuristic, layered by reliability:

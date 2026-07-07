@@ -46,6 +46,19 @@ extension AutoSwitchEngine {
                     confident: true, viaAI: true
                 )
                 await MainActor.run {
+                    // Local sanity gate: the model answers from a single token
+                    // with no context, so it can hallucinate a "correction"
+                    // that is not a word of the target language at all (гите →
+                    // "ubnt"). Refuse any verdict whose text no local signal
+                    // finds plausible. Runs on the main actor because the gate
+                    // consults NSSpellChecker, which the rest of the app only
+                    // ever touches from the main thread.
+                    let targetLang = target.primaryLanguage ?? "en"
+                    guard Decider.aiVerdictPlausible(decision.correctedText,
+                                                     language: targetLang) else {
+                        Log.info("AI verdict rejected: \"\(decision.correctedText)\" implausible in \(targetLang)")
+                        return
+                    }
                     // The safety gate lives in the engine (it owns the buffer
                     // and the generation counter). It no-ops if the user typed
                     // anything since `capturedGeneration`.
