@@ -19,8 +19,14 @@ final class WordBuffer {
     private(set) var lastWordDelimiterChar: Character?
 
     /// Words the user "took back" (converted, then immediately reverted or
-    /// retyped) — don't auto-convert them again this session.
-    private var vetoed: Set<String> = []
+    /// retyped) → each mapped to when it was vetoed. Entries expire after
+    /// `vetoTTL` and the map is capped, so a long-running session can't
+    /// accumulate an ever-growing veto list that silently stops converting more
+    /// and more words the longer the app stays open — previously only a restart
+    /// cleared it, which is exactly the "degrades over a day" complaint.
+    private var vetoed: [String: Date] = [:]
+    private static let vetoTTL: TimeInterval = 20 * 60
+    private static let vetoCap = 500
 
     var isEmpty: Bool { current.isEmpty }
     var count: Int { current.count }
@@ -79,10 +85,30 @@ final class WordBuffer {
     // MARK: - Veto memory
 
     func veto(_ word: String) {
-        vetoed.insert(word.lowercased())
+        let key = word.lowercased()
+        let now = Date()
+        vetoed[key] = now
+        if vetoed.count > Self.vetoCap { pruneVetoed(now: now) }
     }
 
     func isVetoed(_ word: String) -> Bool {
-        vetoed.contains(word.lowercased())
+        let key = word.lowercased()
+        guard let at = vetoed[key] else { return false }
+        guard Date().timeIntervalSince(at) <= Self.vetoTTL else {
+            vetoed.removeValue(forKey: key)   // expired — let it convert again
+            return false
+        }
+        return true
+    }
+
+    /// Drop expired entries; if still over the cap, evict the oldest.
+    private func pruneVetoed(now: Date) {
+        vetoed = vetoed.filter { now.timeIntervalSince($0.value) <= Self.vetoTTL }
+        if vetoed.count > Self.vetoCap {
+            let overflow = vetoed.count - Self.vetoCap
+            for key in vetoed.sorted(by: { $0.value < $1.value }).prefix(overflow).map(\.key) {
+                vetoed.removeValue(forKey: key)
+            }
+        }
     }
 }
