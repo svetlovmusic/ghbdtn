@@ -68,9 +68,15 @@ enum Decider {
 
         // Minimum word length (user-tunable, Settings → Детекция). Short words
         // are the biggest source of false conversions, so below the floor only
-        // convert when the target is a curated/learned word we explicitly trust;
-        // otherwise leave the word alone. The manual hotkey (force) ignores it.
-        if !force, letters.count < minWordLength, !isKnownWord(best.score) {
+        // convert when the target is a word the user *explicitly taught*
+        // (LearnedStore). The curated frequent-words list is deliberately NOT an
+        // exception here: it is full of 2–3-letter tokens ("in", "he", "no",
+        // "on", "by", …) that almost any short wrong-layout sequence collides
+        // with (шт→in, ру→he, ин→by), which would silently defeat the floor —
+        // the user set it precisely to stop short-word conversions. A learned
+        // word is a per-token decision the user made, so it still overrides the
+        // floor. The manual hotkey (force) ignores the floor entirely.
+        if !force, letters.count < minWordLength, !best.score.isLearnedWord {
             return nil
         }
 
