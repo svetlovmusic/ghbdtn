@@ -194,11 +194,12 @@ enum SelfTest {
         print("\n\(pass)/\(cases.count) passed")
 
         let learnOK = runLearningTests(layouts: layouts)
+        let minLenOK = runMinLengthTests(layouts: layouts)
         let escalationOK = runEscalationTests(layouts: layouts)
 
         measureLatency()
         let voiceOK = voicePipelineChecks()
-        return pass == cases.count && learnOK && escalationOK && voiceOK
+        return pass == cases.count && learnOK && minLenOK && escalationOK && voiceOK
     }
 
     // MARK: - Cloud escalation containment
@@ -318,6 +319,56 @@ enum SelfTest {
         check(!converts("fylhtq", en), "after 2× reject: fylhtq kept")
 
         print("\(pass)/\(total) learning checks passed")
+        return pass == total
+    }
+
+    // MARK: - Minimum word length floor
+
+    /// The minimum-word-length floor (Settings → Детекция) must actually hold
+    /// for short words on the automatic path. The ONLY below-floor exception is
+    /// a word the user explicitly TAUGHT (LearnedStore) — never the curated
+    /// frequent-words list, whose short tokens ("in", "he", "by") almost any
+    /// 2–3-letter wrong-layout sequence collides with. Regression guard for the
+    /// «шт»→in / «ру»→he / «ин»→by leaks. Runs after runLearningTests, and
+    /// re-teaches "пэд" itself so it is independent of that ordering.
+    private static func runMinLengthTests(layouts: [KeyboardLayout]) -> Bool {
+        guard let en = layouts.first(where: { ($0.primaryLanguage ?? "") == "en" || $0.id.contains("ABC") }),
+              let ru = layouts.first(where: { ($0.primaryLanguage ?? "") == "ru" }) else { return true }
+        let scorer = LanguageScorer.shared
+        var pass = 0, total = 0
+        func check(_ cond: Bool, _ desc: String) {
+            total += 1; if cond { pass += 1 }
+            print("\(cond ? "✅" : "❌") [minlen] \(desc)")
+        }
+        func converts(_ keys: String, _ src: KeyboardLayout, floor: Int) -> Bool {
+            Decider.decide(strokes: strokes(for: keys), source: src, candidates: layouts,
+                           sensitivity: .balanced, minWordLength: floor)?.confident == true
+        }
+        print("\n-- Minimum word length (floor 4) --")
+
+        // Baseline: with the default floor (2) these short curated-twin words DO
+        // convert — proving the keys/layout are right and the only thing stopping
+        // them at floor 4 is the length gate, not some other veto.
+        check(converts("in", ru, floor: 2), "floor 2: «шт» → in converts (baseline)")
+
+        // The bug: 2–3-letter wrong-layout words whose TARGET is a curated common
+        // word must be KEPT once the user raised the floor to 4.
+        check(!converts("in", ru, floor: 4), "floor 4: «шт» kept (not → in)")
+        check(!converts("he", ru, floor: 4), "floor 4: «ру» kept (not → he)")
+        check(!converts("by", ru, floor: 4), "floor 4: «ин» kept (not → by)")
+        check(!converts("no", ru, floor: 4), "floor 4: «тщ» kept (not → no)")
+
+        // The floor only touches SHORT words: longer wrong-layout words still convert.
+        check(converts("hello", ru, floor: 4), "floor 4: руддщ → hello still converts (5 letters)")
+
+        // The learned-word exception survives the floor: a word the user TAUGHT
+        // still auto-converts below the floor — this is what separates the fix
+        // from an absolute floor. "пэд" (3 letters) via its en twin "g'l".
+        scorer.learnPositive(word: "пэд", language: "ru")
+        scorer.learnPositive(word: "пэд", language: "ru")
+        check(converts("g'l", en, floor: 4), "floor 4: learned пэд still converts (g'l → пэд)")
+
+        print("\(pass)/\(total) minlen checks passed")
         return pass == total
     }
 
