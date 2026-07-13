@@ -153,6 +153,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.appearsDisabled = !active
     }
 
+    /// Version line for the tray menu, read from the bundle's Info.plist. Shown
+    /// as a disabled (non-clickable) item so it's easy to see which build a
+    /// given machine is running.
+    private var menuVersionString: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        return "Версия \(short) (сборка \(build))"
+    }
+
     private func rebuildMenu() {
         let menu = NSMenu()
 
@@ -220,6 +230,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let prefs = NSMenuItem(title: "Настройки…", action: #selector(openSettings), keyEquivalent: ",")
         prefs.target = self
         menu.addItem(prefs)
+
+        // Non-clickable info line: the app version, so you can tell at a glance
+        // which build is installed on a given machine (action: nil → greyed out).
+        let version = NSMenuItem(title: menuVersionString, action: nil, keyEquivalent: "")
+        version.isEnabled = false
+        menu.addItem(version)
 
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Выйти из Ghbdtn (Привет)", action: #selector(quit), keyEquivalent: "q")
