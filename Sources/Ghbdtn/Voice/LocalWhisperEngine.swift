@@ -23,6 +23,13 @@ final class LocalWhisperEngine: SpeechEngine {
     /// stretch of silence.
     private static let idleEviction: TimeInterval = 10 * 60
 
+    /// Segments whose no-speech probability exceeds this are discarded before
+    /// they reach the transcript: on silence Whisper still decodes tokens
+    /// (typically a memorized subtitle credit). 0.6 mirrors Whisper's own
+    /// `no_speech_thold` default, so only segments Whisper itself would judge
+    /// non-speech are dropped — quiet real speech is kept.
+    private static let noSpeechDropThreshold: Float = 0.6
+
     /// Model path snapshotted on the main actor by the controller before each
     /// session — the transcription thread must not read Settings/@Published.
     private let modelURLLock = NSLock()
@@ -91,6 +98,17 @@ final class LocalWhisperEngine: SpeechEngine {
         params.print_timestamps = false
         params.no_timestamps = true
         params.suppress_blank = true
+        // Drop the tokenizer's non-speech token set ("[music]", sound-tag
+        // glyphs) at decode time — one class of silence artifacts, gone before
+        // it can reach the transcript.
+        params.suppress_nst = true
+        // Decode each 30s window independently. On the silent tail / long
+        // pauses of a dictation Whisper emits memorized subtitle-credit
+        // boilerplate ("Субтитры сделал DimaTorzok", "Thank you for watching").
+        // With the default (no_context = false) that hallucination becomes the
+        // decoder prompt for the next window and snowballs into repeated,
+        // byte-identical lines. Cutting cross-window context breaks the loop.
+        params.no_context = true
         params.translate = false
         // Leave a couple of cores for the UI; Metal does the heavy lifting anyway.
         params.n_threads = Int32(max(2, min(8, ProcessInfo.processInfo.activeProcessorCount - 2)))
@@ -111,6 +129,13 @@ final class LocalWhisperEngine: SpeechEngine {
 
         var text = ""
         for i in 0..<whisper_full_n_segments(context) {
+            // A silent 30s window (the quiet tail or a long pause of a
+            // dictation) carries a high no-speech probability. Whisper still
+            // emits *something* for it — usually a subtitle-credit
+            // hallucination — so drop those segments before concatenating.
+            if whisper_full_get_segment_no_speech_prob(context, i) > Self.noSpeechDropThreshold {
+                continue
+            }
             if let segment = whisper_full_get_segment_text(context, i) {
                 text += String(cString: segment)
             }
