@@ -357,18 +357,78 @@ final class DictationController: ObservableObject {
     /// "[BLANK_AUDIO]", "(music)", "♪". Square-bracket tags never appear in
     /// real dictation, so they are stripped anywhere; parentheses can be
     /// legitimate dictated text, so they are dropped only when the whole
-    /// transcript is one parenthesized annotation.
+    /// transcript is one parenthesized annotation. Known subtitle-credit
+    /// hallucinations are removed too (see `stripHallucinations`).
     nonisolated static func cleanTranscript(_ raw: String) -> String {
         var text = raw.replacingOccurrences(of: "\\[[^\\]]*\\]", with: "",
                                             options: .regularExpression)
+        text = stripHallucinations(text)
         text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.hasPrefix("("), text.hasSuffix(")"),
            text.dropFirst().dropLast().firstIndex(of: "(") == nil {
             text = ""
         }
         return text
-            .replacingOccurrences(of: "  ", with: " ")
+            .replacingOccurrences(of: "[ \\t]{2,}", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Subtitle-credit boilerplate baked into Whisper from unsanitised
+    /// YouTube-caption training data, which it emits on silence/noise instead
+    /// of nothing ("Субтитры сделал DimaTorzok", "Thank you for watching").
+    /// These markers never occur in real dictation, so they are cut from
+    /// anywhere in the transcript. `[^.!?\n]*` keeps a match within one
+    /// sentence so neighbouring dictated text survives. Matched
+    /// case-insensitively. This is also the ONLY hallucination guard applied
+    /// to the cloud engine's output, which shares the same Whisper weights.
+    private nonisolated static let hardHallucinationPatterns: [String] = [
+        // The DimaTorzok credit in any verb form, plus the bare handle.
+        "субтитры[^.!?\\n]*dima\\s*torzok[^.!?\\n]*",
+        "dima\\s*torzok",
+        // Other Russian subtitle-credit / editor boilerplate.
+        "субтитры[^.!?\\n]*(подогнал|редактировал|правил)[^.!?\\n]*",
+        "редактор субтитров[^.!?\\n]*",
+        "корректор\\s+[а-яёА-ЯЁ]\\.\\s*[а-яёА-ЯЁ]+",
+        // Amara.org credits (English + the localised "by the … community").
+        "(subtitles|translated)\\s+by\\s+the\\s+amara\\.org\\s+community",
+    ]
+
+    /// Softer boilerplate that *could* be legitimately dictated mid-sentence
+    /// ("спасибо за внимание к деталям"). To avoid false positives it is
+    /// removed only when it forms the trailing tail (or the whole) of the
+    /// transcript — exactly where the silence hallucination lands.
+    private nonisolated static let softHallucinationPatterns: [String] = [
+        "продолжение следует",
+        "продолжение в следующей части",
+        "(спасибо|благодарю)\\s+за\\s+(просмотр|внимание)",
+        "подписывайтесь[^.!?\\n]*",
+        "(thank you|thanks)\\s+for\\s+watching",
+        "please\\s+subscribe[^.!?\\n]*",
+        "subscribe\\s+to\\s+(my|our)\\s+channel[^.!?\\n]*",
+    ]
+
+    /// Strip known non-speech credit hallucinations, consuming the surrounding
+    /// whitespace and the sentence's terminal punctuation so nothing dangles.
+    /// Loops until stable so a chain of trailing credits is fully removed.
+    nonisolated static func stripHallucinations(_ text: String) -> String {
+        var out = text
+        var previous: String
+        var passes = 0
+        repeat {
+            previous = out
+            for pattern in hardHallucinationPatterns {
+                let anywhere = "\\s*(?:" + pattern + ")\\s*[.!?…]*"
+                out = out.replacingOccurrences(of: anywhere, with: " ",
+                                               options: [.regularExpression, .caseInsensitive])
+            }
+            for pattern in softHallucinationPatterns {
+                let trailing = "\\s*(?:" + pattern + ")\\s*[.!?…]*\\s*$"
+                out = out.replacingOccurrences(of: trailing, with: "",
+                                               options: [.regularExpression, .caseInsensitive])
+            }
+            passes += 1
+        } while out != previous && passes < 4
+        return out
     }
 
     /// Requests microphone permission ahead of time (used from Settings) so

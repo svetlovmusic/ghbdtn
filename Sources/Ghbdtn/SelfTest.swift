@@ -417,6 +417,22 @@ enum SelfTest {
         check("keep real text",
               DictationController.cleanTranscript("Привет, мир (тест)!") == "Привет, мир (тест)!")
 
+        // Whisper subtitle-credit hallucinations stripped; real text preserved.
+        check("strip DimaTorzok (whole)",
+              DictationController.cleanTranscript("Субтитры сделал DimaTorzok.").isEmpty)
+        check("strip DimaTorzok (trailing, keep real text)",
+              DictationController.cleanTranscript("Привет, это тест. Субтитры сделал DimaTorzok.")
+                == "Привет, это тест.")
+        check("strip 'Thank you for watching' (trailing)",
+              DictationController.cleanTranscript("All done. Thank you for watching!")
+                == "All done.")
+        check("keep the word субтитры in real text",
+              DictationController.cleanTranscript("Включи субтитры в плеере")
+                == "Включи субтитры в плеере")
+        check("keep 'спасибо за внимание' when not a trailing credit",
+              DictationController.cleanTranscript("Спасибо за внимание к деталям в коде")
+                == "Спасибо за внимание к деталям в коде")
+
         return ok
     }
 
