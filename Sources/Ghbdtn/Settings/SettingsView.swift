@@ -28,6 +28,7 @@ private struct GeneralTab: View {
             Section {
                 Toggle("Включить автопереключение раскладки", isOn: $settings.autoSwitchEnabled)
                 Toggle("Запускать при входе в систему", isOn: $settings.launchAtLogin)
+                Toggle("Проверять обновления автоматически (раз в день)", isOn: $settings.autoCheckUpdates)
             }
             Section("Уведомления") {
                 Toggle("Показывать уведомление при конвертации", isOn: $settings.showConversionNotifications)

@@ -99,6 +99,8 @@ final class Settings: ObservableObject {
     @Published var launchAtLogin: Bool
     @Published var playSoundOnSwitch: Bool
     @Published var showConversionNotifications: Bool
+    /// Daily check of GitHub Releases for a newer version (UpdateChecker).
+    @Published var autoCheckUpdates: Bool
 
     // MARK: Detection
     @Published var sensitivity: Sensitivity
@@ -160,6 +162,7 @@ final class Settings: ObservableObject {
             Keys.launchAtLogin: false,
             Keys.playSoundOnSwitch: false,
             Keys.showConversionNotifications: true,
+            Keys.autoCheckUpdates: true,
             Keys.sensitivity: Sensitivity.balanced.rawValue,
             Keys.trigger: ConvertTrigger.wordBoundary.rawValue,
             Keys.minWordLength: 4,
@@ -182,6 +185,7 @@ final class Settings: ObservableObject {
         launchAtLogin = defaults.bool(forKey: Keys.launchAtLogin)
         playSoundOnSwitch = defaults.bool(forKey: Keys.playSoundOnSwitch)
         showConversionNotifications = defaults.bool(forKey: Keys.showConversionNotifications)
+        autoCheckUpdates = defaults.bool(forKey: Keys.autoCheckUpdates)
 
         sensitivity = Sensitivity(rawValue: defaults.string(forKey: Keys.sensitivity) ?? "") ?? .balanced
         trigger = ConvertTrigger(rawValue: defaults.string(forKey: Keys.trigger) ?? "") ?? .wordBoundary
@@ -234,6 +238,7 @@ final class Settings: ObservableObject {
         persist($launchAtLogin) { self.defaults.set($0, forKey: Keys.launchAtLogin) }
         persist($playSoundOnSwitch) { self.defaults.set($0, forKey: Keys.playSoundOnSwitch) }
         persist($showConversionNotifications) { self.defaults.set($0, forKey: Keys.showConversionNotifications) }
+        persist($autoCheckUpdates) { self.defaults.set($0, forKey: Keys.autoCheckUpdates) }
         persist($sensitivity) { self.defaults.set($0.rawValue, forKey: Keys.sensitivity) }
         persist($trigger) { self.defaults.set($0.rawValue, forKey: Keys.trigger) }
         persist($minWordLength) { self.defaults.set($0, forKey: Keys.minWordLength) }
@@ -321,6 +326,7 @@ final class Settings: ObservableObject {
         static let launchAtLogin = "launchAtLogin"
         static let playSoundOnSwitch = "playSoundOnSwitch"
         static let showConversionNotifications = "showConversionNotifications"
+        static let autoCheckUpdates = "autoCheckUpdates"
         static let sensitivity = "sensitivity"
         static let trigger = "trigger"
         static let minWordLength = "minWordLength"

@@ -34,6 +34,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] in self?.applyLaunchAtLogin($0) }
             .store(in: &cancellables)
 
+        // Daily update polling (the checker itself re-reads the toggle on each
+        // tick, so flipping it off in Settings silences checks immediately).
+        UpdateChecker.shared.start()
+        UpdateChecker.shared.$available
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.rebuildMenu() }
+            .store(in: &cancellables)
+        UpdateChecker.shared.$installing
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.rebuildMenu() }
+            .store(in: &cancellables)
+
         if Permissions.hasAccessibility() {
             startEngine()
         } else {
@@ -231,6 +243,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         prefs.target = self
         menu.addItem(prefs)
 
+        // Update line: an actionable "upgrade to X" when a newer release is
+        // known, otherwise a manual "check now".
+        if UpdateChecker.shared.installing {
+            let busy = NSMenuItem(title: "Загружается обновление…", action: nil, keyEquivalent: "")
+            busy.isEnabled = false
+            menu.addItem(busy)
+        } else if let update = UpdateChecker.shared.available {
+            let upgrade = NSMenuItem(title: "⬆ Обновить до \(update.version)",
+                                     action: #selector(installUpdate), keyEquivalent: "")
+            upgrade.target = self
+            menu.addItem(upgrade)
+        } else {
+            let check = NSMenuItem(title: "Проверить обновления",
+                                   action: #selector(checkForUpdates), keyEquivalent: "")
+            check.target = self
+            menu.addItem(check)
+        }
+
         // Non-clickable info line: the app version, so you can tell at a glance
         // which build is installed on a given machine (action: nil → greyed out).
         let version = NSMenuItem(title: menuVersionString, action: nil, keyEquivalent: "")
@@ -342,6 +372,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func quit() {
         NSApp.terminate(nil)
+    }
+
+    @objc private func checkForUpdates() {
+        UpdateChecker.shared.checkNow(userInitiated: true) { status in
+            Notifier.show(title: "Ghbdtn (Привет)", body: status)
+        }
+    }
+
+    @objc private func installUpdate() {
+        UpdateChecker.shared.installAvailableUpdate()
     }
 
     // MARK: - Hotkeys

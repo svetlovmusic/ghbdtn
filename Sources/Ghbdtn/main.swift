@@ -12,6 +12,12 @@ if CommandLine.arguments.contains("--learncheck") {
     exit(SelfTest.learnCheck() ? 0 : 1)
 }
 
+// Headless update check: `ghbdtn --updatecheck` (test the poller without the
+// GUI; GHBDTN_FAKE_VERSION=0.4.0 simulates an outdated install). Never installs.
+if CommandLine.arguments.contains("--updatecheck") {
+    exit(UpdateChecker.runBlockingCheck() ? 0 : 1)
+}
+
 if CommandLine.arguments.contains("--selftest") {
     // Keep learned-word tests in-memory: never read or write the user's file.
     LanguageScorer.persistLearning = false
