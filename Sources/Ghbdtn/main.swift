@@ -26,9 +26,14 @@ if CommandLine.arguments.contains("--selftest") {
 
 // Validation probe for the on-demand cloud correction backend:
 // `ghbdtn --correct-eval [--model <name>]`. Reads tools/correct-eval/{config,examples}.
+// DEBUG-only: a release binary must not carry a CLI mode that sends data to an
+// environment-supplied URL — otherwise any local process could run the trusted
+// installed app against an attacker's endpoint. Dev builds only.
+#if DEBUG
 if CommandLine.arguments.contains("--correct-eval") {
     exit(CorrectEval.runBlocking() ? 0 : 1)
 }
+#endif
 
 let app = NSApplication.shared
 let delegate = AppDelegate()

@@ -22,7 +22,10 @@ enum Keychain {
         }
         var add = base
         add[kSecValueData as String] = data
-        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        // WhenUnlocked + ThisDeviceOnly: the key is unreadable while the Mac is
+        // locked, and never leaves this device (no iCloud Keychain sync, not in
+        // backups) — the right posture for a credential a background agent holds.
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         let status = SecItemAdd(add as CFDictionary, nil)
         if status != errSecSuccess {
             Log.error("Keychain set failed for \(account): \(status)")

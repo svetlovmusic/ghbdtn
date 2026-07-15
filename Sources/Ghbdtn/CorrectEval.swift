@@ -98,8 +98,9 @@ enum CorrectEval {
             if model.isEmpty { model = json["model"] as? String ?? "" }
             if baseURL.isEmpty { baseURL = json["baseURL"] as? String ?? "" }
         }
-        // Last resort: the key the GUI already stored in the Keychain.
-        if apiKey.isEmpty { apiKey = Keychain.get(account: "ai-api-key") ?? "" }
+        // Deliberately NO Keychain fallback: this eval harness must never read
+        // the GUI's stored API key and send it to an environment-supplied URL.
+        // Pass a key explicitly via OPENAI_API_KEY or the (gitignored) config.
 
         // `--model <name>` wins over everything, for quick A/B on the same set.
         let args = CommandLine.arguments

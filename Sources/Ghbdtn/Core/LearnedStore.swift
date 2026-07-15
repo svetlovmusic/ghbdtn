@@ -199,6 +199,10 @@ final class LearnedStore {
         ioQueue.async {
             if let data = try? JSONEncoder().encode(snap) {
                 try? data.write(to: url, options: .atomic)
+                // The file holds words the user typed — make it owner-only
+                // (0600) so other local accounts can't read it.
+                try? FileManager.default.setAttributes(
+                    [.posixPermissions: 0o600], ofItemAtPath: url.path)
             }
         }
     }
@@ -207,7 +211,9 @@ final class LearnedStore {
         guard let support = FileManager.default.urls(for: .applicationSupportDirectory,
                                                      in: .userDomainMask).first else { return nil }
         let dir = support.appendingPathComponent("Ghbdtn", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(
+            at: dir, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
         return dir.appendingPathComponent("learned.json")
     }
 }

@@ -190,8 +190,11 @@ final class UpdateChecker: ObservableObject {
                 let alert = NSAlert()
                 if let update = self.available {
                     alert.messageText = "Доступна версия \(update.version)"
-                    alert.informativeText = "У вас установлена \(self.currentVersion). Обновить сейчас? Приложение перезапустится автоматически."
-                    alert.addButton(withTitle: "Обновить")
+                    let action = Self.selfInstallEnabled
+                        ? "Обновить сейчас? Приложение перезапустится автоматически."
+                        : "Открыть страницу загрузки, чтобы скачать и установить вручную?"
+                    alert.informativeText = "У вас установлена \(self.currentVersion). \(action)"
+                    alert.addButton(withTitle: Self.selfInstallEnabled ? "Обновить" : "Открыть страницу")
                     alert.addButton(withTitle: "Позже")
                     if alert.runModal() == .alertFirstButtonReturn {
                         self.installAvailableUpdate()
@@ -214,8 +217,24 @@ final class UpdateChecker: ObservableObject {
     /// Download the .dmg of `available`, verify the staged app, then swap the
     /// installed bundle and relaunch. Any failure falls back to opening the
     /// release page so the user is never stuck.
+    /// Self-install (download the .dmg, verify, swap the installed bundle,
+    /// relaunch) is DISABLED. Without a real code-signing trust root
+    /// (Developer ID + notarization, or a Sparkle appcast signed with an
+    /// embedded Ed25519 key), the only checks available are bundle-id, version
+    /// and `codesign --verify` — none of which prove the download came from
+    /// this author. A compromised GitHub Release could then ship a bundle that
+    /// passes, and the updater would delete the real app, strip quarantine and
+    /// run it with the app's Accessibility / input-tap / microphone TCC grants.
+    /// Until a proper trust root exists, "update" only opens the release page
+    /// so the user installs manually and stays in the loop.
+    static let selfInstallEnabled = false
+
     func installAvailableUpdate() {
         guard let update = available, !installing else { return }
+        guard Self.selfInstallEnabled else {
+            NSWorkspace.shared.open(update.pageURL)
+            return
+        }
         // Only self-swap a normal /Applications install; a dev build living in
         // the repo must not be clobbered by a downloaded release.
         let dest = Bundle.main.bundlePath

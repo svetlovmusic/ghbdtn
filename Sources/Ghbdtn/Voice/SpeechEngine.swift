@@ -79,7 +79,7 @@ final class DictationController: ObservableObject {
     private var discardRequested = false
 
     private init() {
-        capture.onLimitReached = { [weak self] in self?.recognize() }
+        capture.onLimitReached = { [weak self] in self?.handleLimitReached() }
         // Input device changed/unplugged mid-dictation: the tap dies with the
         // old format, so salvage what was captured instead of hanging "live".
         capture.onCaptureLost = { [weak self] in self?.recognize() }
@@ -107,6 +107,21 @@ final class DictationController: ObservableObject {
     }
 
     // MARK: - Session lifecycle
+
+    /// The recording hit AudioCapture.maxDuration (5 min). For the LOCAL engine
+    /// that just transcribes what was captured — offline, nothing leaves the
+    /// Mac. For the CLOUD engine, auto-transcribing would silently upload a
+    /// recording the user walked away from and never confirmed with ✓, so
+    /// instead cancel and tell them. A cloud upload must be a deliberate act.
+    private func handleLimitReached() {
+        if Settings.shared.voiceEngine == "cloud", testSink == nil {
+            cancel()
+            Notifier.show(title: "Диктовка остановлена (5 мин)",
+                          body: "Облачный движок не отправляет запись автоматически — начните заново и подтвердите ✓.")
+        } else {
+            recognize()
+        }
+    }
 
     private func begin(bypassEnabledCheck: Bool = false) {
         guard state == .idle else { return }
@@ -265,13 +280,13 @@ final class DictationController: ObservableObject {
         let settings = Settings.shared
         if settings.voiceEngine == "cloud" {
             // The dedicated dictation key falls back to the AI-layer key so
-            // OpenAI users configure one key once — but ONLY when both point
-            // at the same host, otherwise the AI key would leak to whatever
-            // server the dictation Base URL names (e.g. Groq).
-            let sameHost = URL(string: settings.whisperCloudBaseURL)?.host
-                == URL(string: settings.aiBaseURL)?.host
+            // OpenAI users configure one key once — but ONLY when both point at
+            // the same ORIGIN (scheme + host + port). Comparing host alone would
+            // leak the AI key to http://same-host or a different port — a
+            // downgrade or a co-hosted service on the same box.
+            let sameOrigin = Self.sameOrigin(settings.whisperCloudBaseURL, settings.aiBaseURL)
             let key = !settings.whisperCloudAPIKey.isEmpty ? settings.whisperCloudAPIKey
-                    : (sameHost ? settings.aiAPIKey : "")
+                    : (sameOrigin ? settings.aiAPIKey : "")
             return CloudWhisperEngine(baseURL: settings.whisperCloudBaseURL,
                                       apiKey: key,
                                       model: settings.whisperCloudModel)
@@ -280,6 +295,17 @@ final class DictationController: ObservableObject {
         // itself runs off-main and must not touch Settings/@Published state.
         localEngine.prepare(modelURL: ModelDownloadManager.shared.installedModelURL())
         return localEngine
+    }
+
+    /// Two URLs share an origin when scheme, host and effective port all match.
+    /// Used to gate the AI-key fallback so a credential can't ride to a
+    /// different service on the same host or over a downgraded scheme.
+    private static func sameOrigin(_ a: String, _ b: String) -> Bool {
+        guard let ua = URL(string: a), let ub = URL(string: b),
+              let sa = ua.scheme?.lowercased(), let sb = ub.scheme?.lowercased(),
+              let ha = ua.host?.lowercased(), let hb = ub.host?.lowercased() else { return false }
+        func port(_ u: URL, _ scheme: String) -> Int { u.port ?? (scheme == "https" ? 443 : 80) }
+        return sa == sb && ha == hb && port(ua, sa) == port(ub, sb)
     }
 
     // MARK: - HUD

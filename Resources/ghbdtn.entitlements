@@ -4,8 +4,12 @@
 <dict>
     <!-- Not sandboxed: a global keyboard event tap and synthetic event posting
          are incompatible with the App Sandbox. Distribute via Developer ID,
-         not the Mac App Store. -->
-    <key>com.apple.security.automation.apple-events</key>
-    <true/>
+         not the Mac App Store.
+
+         No entitlements are requested: the app drives input through a
+         CGEventTap (gated by the Accessibility TCC grant) and captures audio
+         through AVCaptureDevice (gated by the Microphone TCC grant) — neither
+         needs an entitlement here. The Apple-Events automation entitlement was
+         removed: nothing in the app sends Apple Events. -->
 </dict>
 </plist>

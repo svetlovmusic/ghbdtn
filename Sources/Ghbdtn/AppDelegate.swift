@@ -252,7 +252,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             busy.isEnabled = false
             menu.addItem(busy)
         } else if let update = UpdateChecker.shared.available {
-            let upgrade = NSMenuItem(title: "⬆ Обновить до \(update.version)",
+            let title = UpdateChecker.selfInstallEnabled
+                ? "⬆ Обновить до \(update.version)"
+                : "⬆ Доступна версия \(update.version) — скачать"
+            let upgrade = NSMenuItem(title: title,
                                      action: #selector(installUpdate), keyEquivalent: "")
             upgrade.target = self
             menu.addItem(upgrade)

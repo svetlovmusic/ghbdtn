@@ -191,7 +191,10 @@ final class Settings: ObservableObject {
             Keys.autoSwitchEnabled: true,
             Keys.launchAtLogin: false,
             Keys.playSoundOnSwitch: false,
-            Keys.showConversionNotifications: true,
+            // Off by default: a conversion notification shows the corrected
+            // word itself, which would otherwise land on the lock screen and
+            // in Notification Center. Opt in via «Общие».
+            Keys.showConversionNotifications: false,
             Keys.autoCheckUpdates: true,
             Keys.sensitivity: Sensitivity.balanced.rawValue,
             Keys.trigger: ConvertTrigger.wordBoundary.rawValue,
