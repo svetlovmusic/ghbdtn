@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import Carbon
 import Combine
 
 /// The orchestrator. Consumes tap events, maintains the word buffer, and
@@ -36,9 +37,18 @@ final class AutoSwitchEngine {
     private var lastConversionOriginal: String?
 
     /// The most recent *automatic* conversion (not a manual-forced one), kept so
-    /// that backspacing it feeds persistent negative learning: the as-typed word
-    /// plus its source language, i.e. "the user rejected converting this".
+    /// that an explicit rejection (⌘Z, or delete-and-retype) feeds persistent
+    /// negative learning: the as-typed word plus its source language, i.e.
+    /// "the user rejected converting this".
     private var lastAutoConversion: (text: String, sourceLang: String)?
+    /// When the last conversion was applied — bounds the ⌘Z rejection window so
+    /// an unrelated undo minutes later can't teach a false rejection.
+    private var lastConversionAt = Date.distantPast
+    /// Armed by a backspace right after an auto-conversion: if the user then
+    /// finishes a word identical to the conversion's original, they retyped
+    /// what we converted away — THAT counts as a rejection. A lone backspace
+    /// does not (it is usually just editing), see checkRetypeRejection().
+    private var pendingRejectRetype: (text: String, sourceLang: String)?
 
     /// True when the last conversion's target is a curated common word (e.g.
     /// "привет"). These flagship words must never be self-disabled by a
@@ -96,9 +106,14 @@ final class AutoSwitchEngine {
             let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
             self?.frontmostBundleID = app?.bundleIdentifier
             // A focus change moves the caret to a different field/app; invalidate
-            // any in-flight async (AI) correction so it can't inject there.
+            // any in-flight async (AI) correction so it can't inject there, and
+            // disarm rejection tracking — a ⌘Z in another app is not about us.
             self?.editGeneration &+= 1
             self?.buffer.hardReset()
+            self?.lastConversionOriginal = nil
+            self?.lastAutoConversion = nil
+            self?.lastConversionProtected = false
+            self?.pendingRejectRetype = nil
         }
         frontmostBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
 
@@ -107,7 +122,12 @@ final class AutoSwitchEngine {
             guard let self else { return }
             self.editGeneration &+= 1
             if !LayoutManager.shared.isProgrammaticSwitch {
-                self.buffer.hardReset()
+                // A user-initiated layout switch invalidates the in-progress
+                // word, but the COMPLETED words are still on screen untouched —
+                // keep their history (soft, which also detaches them from
+                // automatic retro fixes) so the manual hotkey keeps working.
+                // hardReset here silently killed post-conversion hotkey use.
+                self.buffer.softReset()
             }
             self.refreshLayouts()
         }
@@ -146,35 +166,38 @@ final class AutoSwitchEngine {
         switch event {
         case .secureInputActive:
             buffer.hardReset()
+            pendingRejectRetype = nil
 
         case .navigationOrClick:
             buffer.softReset()
+            // The caret moved: a later ⌘Z is about whatever the user is doing
+            // now, not about the conversion — disarm the rejection window too.
+            pendingRejectRetype = nil
+            lastConversionOriginal = nil
+            lastAutoConversion = nil
+            lastConversionProtected = false
 
         case .backspace:
-            // A backspace immediately after an auto-conversion is the user
-            // rejecting it. Veto that exact token so it isn't auto-converted
-            // again this session (the safe direction: at worst we skip a
-            // conversion they wanted, recoverable via the manual hotkey).
-            if let rejected = lastConversionOriginal, !lastConversionProtected {
-                buffer.veto(rejected)
-            }
-            // Persistent negative learning: repeatedly rejecting the same auto
-            // conversion (≥ LearnedStore.activationCount) makes the engine keep
-            // that word for good. One rejection only vetoes it this session.
-            // Curated flagship words are exempt — never let a backspace teach
-            // the engine to stop converting e.g. ghbdtn → привет.
+            // A backspace right after an auto-conversion is NOT a rejection by
+            // itself: it is usually just editing (deleting the space to type a
+            // comma, rephrasing), and counting it silently taught the engine to
+            // permanently stop converting words the user wanted (learned.json
+            // filled with poisoned keep-words). It only ARMS retype-detection:
+            // if the user now types the same original token back and finishes
+            // it, that is a deliberate rejection — see checkRetypeRejection().
+            // The immediate rejection signal is ⌘Z (handleCommandShortcut).
+            // Curated flagship words stay exempt from all rejection learning.
             if let auto = lastAutoConversion, !auto.sourceLang.isEmpty, !lastConversionProtected {
-                LanguageScorer.shared.learnNegative(word: auto.text, language: auto.sourceLang)
+                pendingRejectRetype = auto
             }
             buffer.backspace()
             lastConversionOriginal = nil
             lastAutoConversion = nil
             lastConversionProtected = false
 
-        case let .key(stroke, hasCommandLikeModifiers):
+        case let .key(stroke, hasCommandLikeModifiers, hasCommandKey):
             if hasCommandLikeModifiers {
-                // ⌘X etc. — treat as boundary, don't record the key.
-                buffer.softReset()
+                handleCommandShortcut(stroke, isCommand: hasCommandKey)
                 return
             }
             guard let active = LayoutManager.shared.currentLayout() else { return }
@@ -183,6 +206,7 @@ final class AutoSwitchEngine {
             // ARE letters elsewhere (ж, б in Russian) and must stay in the
             // buffer, otherwise wrong-layout words like ";bpym" fall apart.
             if let punct = delimiterCharacter(for: stroke, activeLayout: active) {
+                checkRetypeRejection()
                 // This keystroke is new input after any prior conversion, so
                 // it closes the immediate-reject window (a later backspace must
                 // not veto the word we converted before it).
@@ -199,23 +223,79 @@ final class AutoSwitchEngine {
             lastConversionOriginal = nil
             lastAutoConversion = nil
             if settings.trigger == .live {
-                evaluateCurrentWord(final: false)
+                scheduleLiveEvaluation()
             }
 
         case let .wordDelimiter(_, char):
-            // Evaluate the word we just finished, then roll the buffer. Only a
-            // space is re-emitted: it reliably inserts one character in every
-            // context. Return and Tab carry action semantics (submit a chat
-            // message, run a shell line, move focus) about as often as they
-            // insert a character, and we can't tell which — re-typing them
-            // would execute/submit the corrected word or over-delete adjacent
-            // text. So we leave them untouched (delete the word only): safe
-            // everywhere, at the cost that a word finished with Enter in a
-            // multi-line editor can still keep its first letter. Space is the
-            // overwhelmingly common terminator and is fully fixed.
-            evaluateCurrentWord(final: true, delimiter: char == " " ? char : nil)
+            checkRetypeRejection()
+            // New input after a prior conversion closes its ⌘Z-rejection
+            // window (an undo pressed later is aimed at this newer edit). A
+            // conversion triggered by THIS delimiter re-arms below in apply().
+            lastConversionOriginal = nil
+            lastAutoConversion = nil
+            lastConversionProtected = false
+            // Evaluate the word we just finished, then roll the buffer — but
+            // only when a SPACE finished it. Return and Tab carry action
+            // semantics (submit a chat message, run a shell line, move focus)
+            // about as often as they insert a character, and we can't tell
+            // which. Converting after them corrupts text either way: in a chat
+            // the Enter has already submitted the uncorrected message, so the
+            // late correction types ghost text into the now-empty input; in a
+            // multi-line editor one of our backspaces eats the newline and the
+            // word's first letter survives. So Enter/Tab only complete the
+            // buffer — the word stays reachable via the manual hotkey.
+            if char == " " {
+                evaluateCurrentWord(final: true, delimiter: " ")
+            }
             buffer.complete(delimiterChar: char)
         }
+    }
+
+    /// ⌘Z right after an auto-conversion is the user undoing it — the
+    /// strongest rejection signal available. The tap is listen-only, so the
+    /// shortcut still reaches the app and performs the app's own undo; we only
+    /// learn from it: veto the token for this session outright and count one
+    /// persistent rejection (permanent after LearnedStore.activationCount).
+    /// ⇧⌘Z (redo), ⌃Z (not undo on macOS) and every other shortcut just act
+    /// as a caret boundary. Detection is by physical QWERTY-Z position — on
+    /// remapped Latin layouts (plain Dvorak) it may miss; acceptable, it only
+    /// costs a learning signal, never a conversion.
+    private func handleCommandShortcut(_ stroke: KeyStroke, isCommand: Bool) {
+        let isUndo = isCommand && Int(stroke.keyCode) == kVK_ANSI_Z && !stroke.shift
+        if isUndo,
+           let auto = lastAutoConversion, !auto.sourceLang.isEmpty, !lastConversionProtected,
+           Date().timeIntervalSince(lastConversionAt) < Self.undoRejectWindow {
+            if let rejected = lastConversionOriginal {
+                buffer.veto(rejected, weight: WordBuffer.vetoThreshold)
+            }
+            LanguageScorer.shared.learnNegative(word: auto.text, language: auto.sourceLang)
+            Log.info("⌘Z after auto-conversion: rejection learned for \"\(auto.text)\"")
+        }
+        lastConversionOriginal = nil
+        lastAutoConversion = nil
+        lastConversionProtected = false
+        pendingRejectRetype = nil
+        buffer.softReset()
+    }
+    private static let undoRejectWindow: TimeInterval = 20
+
+    /// Second half of backspace rejection (armed in the .backspace handler):
+    /// the user deleted a fresh auto-conversion and has now finished a word.
+    /// If it reads exactly like the conversion's original in the same layout,
+    /// they deliberately retyped what we converted away — veto it for the
+    /// session and count one persistent rejection. Any other word disarms.
+    private func checkRetypeRejection() {
+        guard let pending = pendingRejectRetype else { return }
+        pendingRejectRetype = nil
+        guard !buffer.current.isEmpty,
+              let lid = buffer.layoutID,
+              let src = layouts.first(where: { $0.id == lid }),
+              (src.primaryLanguage ?? "") == pending.sourceLang else { return }
+        let asTyped = KeyTranslator.shared.interpret(buffer.current, layout: src)
+        guard asTyped.lowercased() == pending.text.lowercased() else { return }
+        buffer.veto(asTyped, weight: WordBuffer.vetoThreshold)
+        LanguageScorer.shared.learnNegative(word: pending.text, language: pending.sourceLang)
+        Log.info("Delete-and-retype after auto-conversion: rejection learned for \"\(pending.text)\"")
     }
 
     /// The character this keystroke contributes as a word boundary, or nil
@@ -239,6 +319,34 @@ final class AutoSwitchEngine {
     }
 
     // MARK: - Decision
+
+    /// Live-trigger evaluation runs only after a short pause in typing, not on
+    /// the keystroke itself. Converting mid-burst raced the user's next key:
+    /// by the time our backspaces landed another character was on screen, the
+    /// delete count was stale, and letters were eaten. The debounce also cuts
+    /// per-keystroke scoring work to (at most) one evaluation per pause.
+    /// `editGeneration` guards staleness: ANY later event bumps it, so a
+    /// pending evaluation after more typing / navigation / focus change no-ops.
+    private var liveEvalWork: DispatchWorkItem?
+    private static let liveEvalDebounce: TimeInterval = 0.25
+
+    private func scheduleLiveEvaluation() {
+        liveEvalWork?.cancel()
+        let generation = editGeneration
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.liveEvalWork = nil
+            // Re-check the toggles: the user may have disabled auto-switch (or
+            // flipped the trigger) inside the debounce window — a conversion
+            // must not fire after the feature was turned off.
+            guard self.editGeneration == generation,
+                  self.isActive, self.settings.autoSwitchEnabled,
+                  self.settings.trigger == .live else { return }
+            self.evaluateCurrentWord(final: false)
+        }
+        liveEvalWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.liveEvalDebounce, execute: work)
+    }
 
     private func evaluateCurrentWord(final: Bool, delimiter: Character? = nil,
                                      delimiterStroke: KeyStroke? = nil) {
@@ -266,10 +374,25 @@ final class AutoSwitchEngine {
         // pipeline at the HID tap, behind it. So the word AND its delimiter
         // are on screen when our backspaces land — delete and re-type both.
         if decision.confident {
-            apply(decision, reemitDelimiter: delimiter, delimiterStroke: delimiterStroke)
+            apply(decision, context: final ? .finalCurrent : .liveCurrent,
+                  reemitDelimiter: delimiter, delimiterStroke: delimiterStroke)
         } else if settings.aiEnabled, final {
             consultAI(strokes: strokes, source: source, fallback: decision)
         }
+    }
+
+    /// Which on-screen word a conversion replaces — determines the buffer
+    /// bookkeeping after the injection.
+    private enum ApplyContext {
+        /// The in-progress word, converted at its terminating delimiter; the
+        /// caller completes the buffer right after.
+        case finalCurrent
+        /// The in-progress word, converted mid-typing (live trigger or manual
+        /// hotkey mid-word). The buffer keeps accumulating the SAME word in
+        /// the target layout, so its tail is not orphaned into a new word.
+        case liveCurrent
+        /// The last completed word (manual hotkey post-hoc, cloud verdict).
+        case completedLast
     }
 
     /// Replace the on-screen wrong word with the corrected text.
@@ -278,14 +401,14 @@ final class AutoSwitchEngine {
     ///   if any. In every terminated-word path it is on screen (or in flight
     ///   ahead of our synthetic events) by the time the backspaces arrive, so
     ///   it must be deleted along with the word and re-typed after the
-    ///   correction. Pass nil only for the live path, where the word has no
-    ///   delimiter yet.
+    ///   correction. Pass nil only for in-progress words.
     /// - Parameter delimiterStroke: when the delimiter is a punctuation key
     ///   (not a layout-invariant space), the stroke that produced it. Since we
     ///   are asserting the word was meant for `target`, the delimiter is
     ///   re-typed as the character that key produces under `target` — the ABC
     ///   '/' the user pressed becomes Russian '.'.
-    private func apply(_ decision: Decider.Decision, reemitDelimiter: Character?,
+    private func apply(_ decision: Decider.Decision, context: ApplyContext,
+                       reemitDelimiter: Character?,
                        delimiterStroke: KeyStroke? = nil, forced: Bool = false) {
         let target = decision.target
         let corrected = decision.correctedText
@@ -298,16 +421,32 @@ final class AutoSwitchEngine {
            s.count == 1, let c = s.first {
             reemit = c
         }
-        let deleteCount = original.count + (reemitDelimiter != nil ? 1 : 0)
-        let replacement = corrected + (reemit.map(String.init) ?? "")
+
+        // Retroactive short-word fix («yt описано»): a confident boundary
+        // conversion is strong evidence the word BEFORE it, typed in the same
+        // wrong layout, was wrong too — rewrite both in one injection.
+        var retro: (deleteExtra: Int, prefix: String)?
+        if context == .finalCurrent, !forced, !decision.viaAI {
+            retro = retroFix(for: decision)
+        }
+
+        let deleteCount = (retro?.deleteExtra ?? 0) + original.count + (reemitDelimiter != nil ? 1 : 0)
+        let replacement = (retro?.prefix ?? "") + corrected + (reemit.map(String.init) ?? "")
         TextInjector.shared.replaceText(
             deleteCount: deleteCount,
             with: replacement,
             switchToLayoutID: target.id
         )
-        buffer.consumeLastWord()
-        buffer.softReset()
+        switch context {
+        case .finalCurrent:
+            buffer.noteConversionOfCurrentWord(targetLayoutID: target.id)
+        case .liveCurrent:
+            buffer.adoptLayout(target.id)
+        case .completedLast:
+            buffer.updateLastWordConverted(targetLayoutID: target.id)
+        }
         lastConversionOriginal = original
+        lastConversionAt = Date()
         // Only automatic conversions arm negative learning: a manual-forced one
         // being backspaced is the user changing their own mind, not the engine
         // being wrong.
@@ -336,6 +475,35 @@ final class AutoSwitchEngine {
         notifyIfNeeded(record)
     }
 
+    /// The «yt описано» fix: when a word converts confidently at its boundary,
+    /// reconsider the word immediately before it. Convert it too — in the same
+    /// injection — only under the strictest agreement: typed in the same
+    /// (wrong) layout, finished with a single space, fresh, caret geometry
+    /// intact (not detached), not vetoed, short enough that the length floor
+    /// skipped it, and its twin in the SAME target direction is a word the
+    /// engine trusts outright (curated frequent word or user-taught). Longer
+    /// unconverted neighbors stayed for a reason — they are left alone.
+    private func retroFix(for decision: Decider.Decision) -> (deleteExtra: Int, prefix: String)? {
+        guard let prev = buffer.lastWord,
+              !prev.converted, !prev.detached,
+              prev.delimiter == " ",
+              prev.layoutID == decision.source.id,
+              Date().timeIntervalSince(prev.completedAt) < Self.retroFixWindow else { return nil }
+        let translator = KeyTranslator.shared
+        let prevOriginal = translator.interpret(prev.strokes, layout: decision.source)
+        guard !prevOriginal.isEmpty, !buffer.isVetoed(prevOriginal) else { return nil }
+        let twin = translator.interpret(prev.strokes, layout: decision.target)
+        let twinLetters = twin.filter { $0.isLetter }.count
+        guard twin != prevOriginal, twinLetters >= 1,
+              twinLetters < settings.minWordLength else { return nil }
+        let lang = decision.target.primaryLanguage ?? "en"
+        let score = LanguageScorer.shared.score(twin, language: lang, completeWord: true)
+        guard score.isCommonWord || score.isLearnedWord else { return nil }
+        buffer.markLastWordRetroConverted(targetLayoutID: decision.target.id)
+        return (prevOriginal.count + 1, twin + " ")
+    }
+    private static let retroFixWindow: TimeInterval = 30
+
     /// Entry point for asynchronous deciders (the cloud-AI layer). Only applies
     /// if the user has typed *nothing* since the request was fired (generation
     /// unchanged) and the completed word is still the last thing on screen —
@@ -349,8 +517,8 @@ final class AutoSwitchEngine {
         // The completed word plus its delimiter are on screen (the sync path
         // already ran during word completion, so a completed word reaching here
         // means the buffer rolled over). Re-emit the delimiter we recorded.
-        let delimiter = buffer.lastWordDelimiterChar
-        apply(decision, reemitDelimiter: delimiter)
+        let delimiter = buffer.lastWord?.delimiter
+        apply(decision, context: .completedLast, reemitDelimiter: delimiter)
     }
 
     private func notifyIfNeeded(_ record: ConversionRecord) {
@@ -365,9 +533,12 @@ final class AutoSwitchEngine {
     /// Convert the last typed word (or current) on demand, regardless of
     /// confidence. Used by the manual hotkey when auto-switch missed one.
     func manualConvertLastWord() {
-        // Prefer the in-progress word; fall back to the last completed one.
-        let strokes = buffer.isEmpty ? buffer.lastWord : buffer.current
-        let layoutID = buffer.isEmpty ? buffer.lastWordLayoutID : buffer.layoutID
+        // Prefer the in-progress word; fall back to the last completed one —
+        // including one the engine itself converted (its recorded layoutID is
+        // the conversion target, so a second hotkey press toggles it back).
+        let usingCurrent = !buffer.isEmpty
+        let strokes = usingCurrent ? buffer.current : (buffer.lastWord?.strokes ?? [])
+        let layoutID = usingCurrent ? buffer.layoutID : buffer.lastWord?.layoutID
         guard strokes.count >= 1,
               let layoutID,
               let source = layouts.first(where: { $0.id == layoutID }) else {
@@ -390,8 +561,9 @@ final class AutoSwitchEngine {
 
         // If the word was already terminated (buffer rolled over), the delimiter
         // is on screen — delete and re-emit it around the correction.
-        let reemit: Character? = buffer.isEmpty ? buffer.lastWordDelimiterChar : nil
-        apply(decision, reemitDelimiter: reemit, forced: true)
+        let reemit: Character? = usingCurrent ? nil : buffer.lastWord?.delimiter
+        apply(decision, context: usingCurrent ? .liveCurrent : .completedLast,
+              reemitDelimiter: reemit, forced: true)
 
         // Positive learning: the user explicitly asked for this word. After
         // LearnedStore.activationCount forced conversions it auto-converts on

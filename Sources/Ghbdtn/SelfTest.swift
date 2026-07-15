@@ -172,6 +172,29 @@ enum SelfTest {
                  note: "prefix: гтащдд → unfoll"),
             Case(keys: "entit", source: en, expectConvert: false, complete: false,
                  note: "prefix of correct word → keep"),
+
+            // -- 2026-07 audit regressions (docs/audit-conversion-bugs-2026-07-15.md).
+            // BUG-1: the length floor measures the CANDIDATE word, not the
+            // as-typed twin. «бок»/«это» are 3-letter words even though their
+            // Latin twins ",jr"/"'nj" carry only 2 letters (б/э sit on
+            // punctuation keys). The default floor here is 2; runMinLengthTests
+            // covers floors 3–4 for the same words.
+            Case(keys: ",jr", source: en, expectConvert: true, note: "BUG-1: ,jr → бок"),
+            Case(keys: "'nj", source: en, expectConvert: true, note: "BUG-1: 'nj → это"),
+            // BUG-2 (local FP class): a correctly-typed word must not convert
+            // just because its twin happens to be spellchecker-accepted when
+            // the n-gram can't call the typed side gibberish.
+            Case(keys: "ken", source: ru, expectConvert: false, note: "BUG-2: лут → keep, not ken"),
+            Case(keys: "kens", source: ru, expectConvert: false, note: "BUG-2: луты → keep, not kens"),
+            Case(keys: "iban", source: en, expectConvert: false, note: "BUG-2: iban → keep (ngram vouches alone)"),
+            Case(keys: ",thx", source: ru, expectConvert: false, note: "BUG-2: берч → keep, not ,thx"),
+            // BUG-5: the dictionary layer must not fire on live prefixes —
+            // typing «буфер» reaches prefix «буфе» whose twin ",eat" tokenizes
+            // to the dictionary word "eat".
+            Case(keys: ",eat", source: ru, expectConvert: false, complete: false,
+                 note: "BUG-5: prefix «буфе» must not flip to ,eat"),
+            Case(keys: "gent", source: ru, expectConvert: false, complete: false,
+                 note: "BUG-5: prefix «путе» must not flip to gent"),
         ]
 
         var pass = 0
@@ -196,10 +219,114 @@ enum SelfTest {
         let learnOK = runLearningTests(layouts: layouts)
         let minLenOK = runMinLengthTests(layouts: layouts)
         let escalationOK = runEscalationTests(layouts: layouts)
+        let bufferOK = runBufferTests()
+        let aiGateOK = runAIGateTests()
 
         measureLatency()
         let voiceOK = voicePipelineChecks()
-        return pass == cases.count && learnOK && minLenOK && escalationOK && voiceOK
+        return pass == cases.count && learnOK && minLenOK && escalationOK
+            && bufferOK && aiGateOK && voiceOK
+    }
+
+    // MARK: - WordBuffer state machine (retro-fix safety, history survival)
+
+    /// Guards the completed-word bookkeeping the retroactive short-word fix
+    /// depends on: any event that breaks the "lastWord + one delimiter +
+    /// current word" on-screen adjacency must detach lastWord, or the retro
+    /// deleteCount desyncs from the screen and eats user text (adversarial
+    /// audit findings: double space, backspace-deleted delimiter).
+    private static func runBufferTests() -> Bool {
+        var pass = 0, total = 0
+        func check(_ cond: Bool, _ desc: String) {
+            total += 1; if cond { pass += 1 }
+            print("\(cond ? "✅" : "❌") [buffer] \(desc)")
+        }
+        print("\n-- WordBuffer state machine --")
+        let st = strokes(for: "yt")
+
+        var b = WordBuffer()
+        st.forEach { b.append($0, activeLayoutID: "en") }
+        b.complete(delimiterChar: " ")
+        check(b.lastWord != nil && b.lastWord?.converted == false
+              && b.lastWord?.detached == false && b.lastWord?.delimiter == " ",
+              "complete records the word, attached")
+
+        b.complete(delimiterChar: " ") // bare second space, empty current
+        check(b.lastWord?.detached == true, "bare delimiter detaches lastWord (double-space)")
+
+        b = WordBuffer()
+        st.forEach { b.append($0, activeLayoutID: "en") }
+        b.complete(delimiterChar: " ")
+        b.backspace() // empty current: deletes the on-screen delimiter
+        check(b.lastWord?.detached == true, "backspace on empty buffer detaches lastWord")
+
+        b = WordBuffer()
+        st.forEach { b.append($0, activeLayoutID: "en") }
+        b.complete(delimiterChar: " ")
+        st.forEach { b.append($0, activeLayoutID: "en") }
+        b.append(st[0], activeLayoutID: "ru") // manual layout switch mid-word
+        check(b.lastWord != nil && b.current.count == 1,
+              "mid-word layout switch restarts current, keeps history")
+
+        b = WordBuffer()
+        st.forEach { b.append($0, activeLayoutID: "en") }
+        b.noteConversionOfCurrentWord(targetLayoutID: "ru")
+        b.complete(delimiterChar: " ")
+        check(b.lastWord?.converted == true && b.lastWord?.layoutID == "ru",
+              "boundary conversion recorded (converted, target layout)")
+
+        b = WordBuffer()
+        st.forEach { b.append($0, activeLayoutID: "en") }
+        b.adoptLayout("ru") // live conversion mid-word
+        check(b.layoutID == "ru", "adoptLayout re-labels the in-progress word")
+        b.complete(delimiterChar: " ")
+        check(b.lastWord?.converted == true && b.lastWord?.layoutID == "ru",
+              "live-converted word completes as converted")
+
+        b = WordBuffer()
+        st.forEach { b.append($0, activeLayoutID: "en") }
+        b.complete(delimiterChar: " ")
+        b.softReset()
+        check(b.lastWord != nil && b.lastWord?.detached == true,
+              "softReset keeps history but detaches it")
+
+        b.veto("ghbdtn", weight: WordBuffer.vetoThreshold)
+        check(b.isVetoed("GHBDTN"), "weighted veto blocks in one event, case-insensitive")
+
+        print("\(pass)/\(total) buffer checks passed")
+        return pass == total
+    }
+
+    // MARK: - Cloud-escalation verdict gate (aiEscalatedVerdictAllowed)
+
+    /// The model's context-free choice alone must never convert tokens no
+    /// local signal can judge — adversarial audit residuals: «лут»→"ken",
+    /// "key"→«лун», "i'm"→«шэь».
+    private static func runAIGateTests() -> Bool {
+        var pass = 0, total = 0
+        func check(_ cond: Bool, _ desc: String) {
+            total += 1; if cond { pass += 1 }
+            print("\(cond ? "✅" : "❌") [ai-gate] \(desc)")
+        }
+        func allowed(_ typed: String, _ srcLang: String, _ twin: String, _ dstLang: String) -> Bool {
+            Decider.aiEscalatedVerdictAllowed(typedText: typed, sourceLanguage: srcLang,
+                                              twinText: twin, targetLanguage: dstLang)
+        }
+        print("\n-- Cloud verdict gate --")
+        check(!allowed("лут", "ru", "ken", "en"), "лут → ken refused (no local signal on either side)")
+        check(!allowed("key", "en", "лун", "ru"), "key → лун refused")
+        check(!allowed("дсд", "ru", "lcl", "en"), "дсд → lcl refused")
+        check(!allowed("i'm", "en", "шэь", "ru"), "i'm → шэь refused (unvouched unscoreable twin)")
+        check(allowed(";bpym", "en", "жизнь", "ru"), "жизнь allowed (typed side foreign, twin scoreable)")
+        check(allowed("фтч", "ru", "fnx", "en") == false, "3-letter clean token refused")
+        check(allowed("ыдфалсд", "ru", "sdfakcd", "en"), "scoreable junk keeps cloud recovery")
+        // A learned twin lifts the refusal — the user taught this word.
+        LanguageScorer.shared.learnPositive(word: "пэд", language: "ru")
+        LanguageScorer.shared.learnPositive(word: "пэд", language: "ru")
+        check(allowed("g'l", "en", "пэд", "ru"), "learned twin allowed below every signal")
+
+        print("\(pass)/\(total) ai-gate checks passed")
+        return pass == total
     }
 
     // MARK: - Cloud escalation containment
@@ -360,6 +487,15 @@ enum SelfTest {
 
         // The floor only touches SHORT words: longer wrong-layout words still convert.
         check(converts("hello", ru, floor: 4), "floor 4: руддщ → hello still converts (5 letters)")
+
+        // BUG-1: the floor measures the CANDIDATE word. «бок» and «это» are
+        // 3-letter words; their Latin twins ",jr"/"'nj" show only 2 letters
+        // because б/э sit on punctuation keys — they must convert at floor 3
+        // and stop at floor 4 like any other 3-letter word.
+        check(converts(",jr", en, floor: 3), "floor 3: ,jr → бок (candidate letters counted)")
+        check(!converts(",jr", en, floor: 4), "floor 4: ,jr kept (бок is 3 letters)")
+        check(converts("'nj", en, floor: 3), "floor 3: 'nj → это")
+        check(!converts("'nj", en, floor: 4), "floor 4: 'nj kept (это is 3 letters)")
 
         // The learned-word exception survives the floor: a word the user TAUGHT
         // still auto-converts below the floor — this is what separates the fix

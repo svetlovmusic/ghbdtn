@@ -34,7 +34,13 @@ enum Decider {
 
         let asTyped = translator.interpret(strokes, layout: source)
         let letters = asTyped.filter { $0.isLetter }
-        guard letters.count >= 2 else { return nil }
+        // The as-typed side can undercount letters (RU words whose б/ю/ж/э sit
+        // on punctuation keys read as ",jr" in Latin), so word-length guards
+        // are enforced on the CANDIDATE side below. Here only require that the
+        // automatic path sees at least one as-typed letter — pure punctuation
+        // runs ("...", "?!") must never auto-convert. The manual hotkey may
+        // convert even those (юг → ".u" has a single as-typed letter).
+        guard !letters.isEmpty || force else { return nil }
 
         // On the automatic path, never touch alphanumeric tokens (codes, IDs,
         // passwords like "qwe123"): digits are identical across layouts, so
@@ -51,16 +57,24 @@ enum Decider {
         if !force, typedScore.isKeepWord { return nil }
 
         // Evaluate every *other* enabled layout as a possible intended target.
+        // rank() may only consult the dictionary for complete words: the
+        // spellcheck is a synchronous NSSpellChecker round-trip, far too slow
+        // for the per-keystroke live path (it once caused tap timeouts and
+        // dropped keys), and a prefix of a real word is not a dictionary word
+        // anyway.
         var best: (layout: KeyboardLayout, score: LanguageScorer.Score, text: String)?
         for candidate in candidates where candidate.id != source.id {
             let candidateText = translator.interpret(strokes, layout: candidate)
             // Skip candidates that produce the same text (e.g. two Latin layouts
-            // that share letters — nothing would change visually).
-            guard candidateText != asTyped else { continue }
+            // that share letters — nothing would change visually). A credible
+            // intended word also has at least two letters of its own.
+            guard candidateText != asTyped,
+                  candidateText.filter({ $0.isLetter }).count >= 2 else { continue }
             let lang = candidate.primaryLanguage ?? "en"
             let score = scorer.score(candidateText, language: lang, completeWord: isCompleteWord)
 
-            if best == nil || Self.rank(score) > Self.rank(best!.score) {
+            if best == nil || Self.rank(score, useDictionary: isCompleteWord)
+                            > Self.rank(best!.score, useDictionary: isCompleteWord) {
                 best = (candidate, score, candidateText)
             }
         }
@@ -69,14 +83,19 @@ enum Decider {
         // Minimum word length (user-tunable, Settings → Детекция). Short words
         // are the biggest source of false conversions, so below the floor only
         // convert when the target is a word the user *explicitly taught*
-        // (LearnedStore). The curated frequent-words list is deliberately NOT an
-        // exception here: it is full of 2–3-letter tokens ("in", "he", "no",
-        // "on", "by", …) that almost any short wrong-layout sequence collides
-        // with (шт→in, ру→he, ин→by), which would silently defeat the floor —
-        // the user set it precisely to stop short-word conversions. A learned
-        // word is a per-token decision the user made, so it still overrides the
-        // floor. The manual hotkey (force) ignores the floor entirely.
-        if !force, letters.count < minWordLength, !best.score.isLearnedWord {
+        // (LearnedStore). The floor measures the CANDIDATE — the word the user
+        // meant to type. Measuring the as-typed side punished RU words whose
+        // б/ю/ж/э land on punctuation keys («бок» → ",jr" counts 2 letters and
+        // was blocked at floor 3 despite being a 3-letter word). The curated
+        // frequent-words list is deliberately NOT an exception here: it is full
+        // of 2–3-letter tokens ("in", "he", "no", "on", "by", …) that almost
+        // any short wrong-layout sequence collides with (шт→in, ру→he, ин→by),
+        // which would silently defeat the floor — the user set it precisely to
+        // stop short-word conversions. A learned word is a per-token decision
+        // the user made, so it still overrides the floor. The manual hotkey
+        // (force) ignores the floor entirely.
+        let candidateLetters = best.text.filter { $0.isLetter }.count
+        if !force, candidateLetters < minWordLength, !best.score.isLearnedWord {
             return nil
         }
 
@@ -138,11 +157,14 @@ enum Decider {
     /// Bigram coverage is intentionally NOT used: with a 120k-word corpus it
     /// saturates (~1.0 for almost any letter sequence, incl. "ghbdtn"), so it
     /// carries no signal here.
-    private static func rank(_ s: LanguageScorer.Score) -> Double {
+    /// `useDictionary` is false on the live (per-keystroke) path: the
+    /// spellcheck is synchronous and slow, and prefixes aren't dictionary
+    /// words — see the caller.
+    private static func rank(_ s: LanguageScorer.Score, useDictionary: Bool) -> Double {
         var r = 0.0
         if s.scriptMatch { r += 1.0 }
         if isKnownWord(s) { r += 8.0 }
-        if s.isDictionaryWord { r += 10.0 }
+        if useDictionary, s.isDictionaryWord { r += 10.0 }
         r += 2.0 * (s.ngramPercentile ?? 0.0)
         return r
     }
@@ -154,17 +176,32 @@ enum Decider {
         s.isCommonWord || s.isLearnedWord
     }
 
+    /// Above this calibrated percentile the n-gram model vouches for the typed
+    /// word on its own, dictionary or not. Loanwords and domain slang the OS
+    /// dictionary will never know («энвайрменте» 0.088, «алерт» 0.154, «деплой»
+    /// 0.525, «гите» 0.116) sit above it; measured wrong-layout junk sits below
+    /// 0.05 in ~99.6% of cases (tools/domain-corpora sweep, 2026-07), and the
+    /// residual collisions are strings that genuinely read as words of the
+    /// other language ("kens", "inputs") — keeping those is the safe default.
+    private static let strongVouchPercentile = 0.05
+
     /// Does the source language itself vouch for the as-typed word? Curated and
-    /// learned words always do. Otherwise require agreement of two independent
-    /// signals: the n-gram percentile clear of the sensitivity's gibberish
-    /// threshold (checked first — it is precomputed, whereas isDictionaryWord
-    /// pays a lazy synchronous spellcheck) AND the OS dictionary.
+    /// learned words always do, and so does a clearly word-like n-gram score
+    /// (strongVouchPercentile) — requiring the OS dictionary on top of it sent
+    /// half the user's correctly-typed domain vocabulary to the cloud layer,
+    /// whose context-free guess converts real loanwords («фетч» → "fetch").
+    /// In the gray zone above the gibberish threshold but below the strong
+    /// vouch, require the two independent signals to agree: n-gram (checked
+    /// first — it is precomputed, whereas isDictionaryWord pays a lazy
+    /// synchronous spellcheck) AND the OS dictionary.
     private static func sourceVouches(for typed: LanguageScorer.Score,
                                       sensitivity: Sensitivity,
                                       isCompleteWord: Bool) -> Bool {
         if isKnownWord(typed) { return true }
+        guard let p = typed.ngramPercentile else { return false }
+        if p > strongVouchPercentile { return true }
         let t = sensitivity.ngramThresholds(completeWord: isCompleteWord)
-        guard let p = typed.ngramPercentile, p > t.maxTyped else { return false }
+        guard p > t.maxTyped else { return false }
         return typed.isDictionaryWord
     }
 
@@ -177,6 +214,32 @@ enum Decider {
     /// sensitivity setting — reusing maxTyped would make the cautious mode's
     /// gate the laxest, inverting the user's risk knob.
     private static let aiGibberishPercentile = 0.002
+
+    /// Gate for cloud-escalated verdicts, applied together with the
+    /// twin-equality check (AIConsult): the model's context-free choice alone
+    /// must never convert a token about which the local signals can say
+    /// NOTHING. Two refusals:
+    ///  1. the typed side carries no gibberish evidence at all — the n-gram
+    ///     can't score it and every character is in the source alphabet
+    ///     («лут», "key", "eve") — unless the twin is a word the user's own
+    ///     layers trust (curated/learned). Otherwise a 3-letter real word
+    ///     whose twin happens to be a dictionary word ("ken", «лун») converts
+    ///     on the model's word alone — the local dictionary rule already
+    ///     refuses exactly this, and the cloud path must not be laxer;
+    ///  2. the twin itself is unscoreable AND unknown to every signal
+    ///     ("i'm" → «шэь») — nothing anywhere vouches for the result.
+    /// Tokens with real gibberish evidence (фетч-class junk, foreign-char
+    /// twins like ";bpym") keep their cloud recovery.
+    static func aiEscalatedVerdictAllowed(typedText: String, sourceLanguage: String,
+                                          twinText: String, targetLanguage: String) -> Bool {
+        let scorer = LanguageScorer.shared
+        let typed = scorer.score(typedText, language: sourceLanguage, completeWord: true)
+        let twin = scorer.score(twinText, language: targetLanguage, completeWord: true)
+        if twin.isCommonWord || twin.isLearnedWord { return true }
+        if typed.ngramPercentile == nil && !typed.ngramForeign { return false }
+        if twin.ngramPercentile == nil && !twin.isDictionaryWord { return false }
+        return true
+    }
 
     /// Sanity gate for cloud-AI verdicts: refuse corrected text the local
     /// signals can positively refute — wrong script, or an n-gram score at
@@ -217,27 +280,39 @@ enum Decider {
         // never second-guess it with weaker signals.
         if isKnownWord(typed) { return false }
 
-        switch sensitivity {
-        case .cautious:
-            // Don't trust the dictionary — it won't convert obscure
-            // dictionary words. The n-gram layer below still applies, with
-            // the strictest thresholds.
-            break
-
-        case .balanced:
-            // Dictionary decisive: swapped is a real word, typed is not.
-            if candidate.isDictionaryWord && !typed.isDictionaryWord { return true }
-
-        case .aggressive:
-            if candidate.isDictionaryWord && !typed.isDictionaryWord { return true }
-            // Both are valid dictionary words: prefer the candidate when it is
-            // also a curated/learned word (rarely both — this nudges ambiguous
-            // cases toward the more-likely-intended word).
-            if candidate.isDictionaryWord && isKnownWord(candidate) { return true }
+        // The dictionary layer applies to COMPLETE words only: a prefix of a
+        // real word is not a dictionary word (typing «буфер» must not flip at
+        // «буфе» because its twin ",eat" tokenizes to the word "eat"), and the
+        // synchronous spellcheck is too slow for the per-keystroke live path.
+        // The OS dictionary also false-accepts junk ("ken", "lcl", "thx"), so
+        // it is decisive only when the n-gram layer agrees the typed side is
+        // gibberish (or can't even score it as this language) and cannot
+        // positively refute the candidate. Without that gate, correctly-typed
+        // short slang converted into accidental dictionary twins («лут» → "ken",
+        // "iban" → «шифт»).
+        if isCompleteWord, sensitivity != .cautious,
+           typedGibberish(typed, sensitivity: sensitivity, isCompleteWord: isCompleteWord),
+           !(candidate.ngramPercentile.map { $0 < aiGibberishPercentile } ?? false),
+           candidate.isDictionaryWord, !typed.isDictionaryWord {
+            return true
         }
 
         return ngramConfident(typed: typed, candidate: candidate,
                               sensitivity: sensitivity, isCompleteWord: isCompleteWord)
+    }
+
+    /// The typed side reads like gibberish of its language: the n-gram model
+    /// scores it at or below the sensitivity's gibberish threshold, or it
+    /// cannot score it at all because the string has characters outside the
+    /// language's alphabet (",jr"). An unscoreable all-letter short string
+    /// («лут», "ker") is NOT gibberish — it just can't be judged.
+    private static func typedGibberish(_ typed: LanguageScorer.Score,
+                                       sensitivity: Sensitivity,
+                                       isCompleteWord: Bool) -> Bool {
+        if let p = typed.ngramPercentile {
+            return p <= sensitivity.ngramThresholds(completeWord: isCompleteWord).maxTyped
+        }
+        return typed.ngramForeign
     }
 
     /// The out-of-vocabulary layer: character 4-gram models calibrated to

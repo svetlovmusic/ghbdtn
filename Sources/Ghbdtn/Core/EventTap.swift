@@ -10,7 +10,9 @@ import AppKit
 /// explicitly enabled the cloud-AI assist for ambiguous words).
 final class EventTap {
     enum TapEvent {
-        case key(KeyStroke, hasCommandLikeModifiers: Bool)
+        /// `hasCommandKey` is true only for a real ⌘ (not ⌃) — the engine's
+        /// undo detection must not fire on Control-Z, which is not undo.
+        case key(KeyStroke, hasCommandLikeModifiers: Bool, hasCommandKey: Bool)
         case backspace
         case wordDelimiter(KeyStroke, Character?) // space / return / tab; punctuation is classified by the engine (it needs the active layout)
         case navigationOrClick                    // arrows, clicks — caret moved
@@ -109,9 +111,14 @@ final class EventTap {
             // Command / Control shortcuts (⌘C, ⌃A, …) are not typing. Option is
             // NOT in this set: it produces real characters (alt-graph / dead
             // keys) that we translate faithfully via KeyStroke.option.
+            // Shift is preserved so the engine can tell ⌘Z (undo — a rejection
+            // signal for the last auto-conversion) from ⇧⌘Z (redo).
             if flags.contains(.maskCommand) || flags.contains(.maskControl) {
-                dispatch(.key(KeyStroke(keyCode: keyCode, shift: false, capsLock: false),
-                              hasCommandLikeModifiers: true))
+                dispatch(.key(KeyStroke(keyCode: keyCode,
+                                        shift: flags.contains(.maskShift),
+                                        capsLock: false),
+                              hasCommandLikeModifiers: true,
+                              hasCommandKey: flags.contains(.maskCommand)))
                 return
             }
 
@@ -137,7 +144,7 @@ final class EventTap {
                  kVK_Home, kVK_End, kVK_PageUp, kVK_PageDown, kVK_Escape:
                 dispatch(.navigationOrClick)
             default:
-                dispatch(.key(stroke, hasCommandLikeModifiers: false))
+                dispatch(.key(stroke, hasCommandLikeModifiers: false, hasCommandKey: false))
             }
 
         default:

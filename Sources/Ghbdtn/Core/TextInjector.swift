@@ -130,6 +130,10 @@ final class TextInjector {
 
     /// Convert the currently selected text between two layouts using the
     /// pasteboard: ⌘C → transform → ⌘V, preserving the user's clipboard.
+    /// The from/to arguments are the caller's guess (usually current layout →
+    /// other); the actual direction is re-oriented by the selection's own
+    /// script once the text is read — right after an auto-switch the current
+    /// system layout says nothing about what the selected text is written in.
     func convertSelection(from source: KeyboardLayout, to target: KeyboardLayout,
                           completion: @escaping (Bool) -> Void) {
         let pasteboard = NSPasteboard.general
@@ -149,7 +153,8 @@ final class TextInjector {
                 completion(false)
                 return
             }
-            let converted = KeyTranslator.shared.convert(selected, from: source, to: target)
+            let (src, dst) = Self.orient(selection: selected, source: source, target: target)
+            let converted = KeyTranslator.shared.convert(selected, from: src, to: dst)
             pasteboard.clearContents()
             pasteboard.setString(converted, forType: .string)
             let ourWrite = pasteboard.changeCount
@@ -226,6 +231,30 @@ final class TextInjector {
         guard let items = recoverySavedItems else { return }
         recoverySavedItems = nil
         Self.restore(pasteboard: NSPasteboard.general, items: items)
+    }
+
+    /// Pick the conversion direction from the selection's own script: convert
+    /// FROM the layout whose script the text is currently written in. Only
+    /// swaps the two layouts the caller already chose; an even/unclear mix
+    /// keeps the caller's order.
+    private static func orient(selection: String, source: KeyboardLayout,
+                               target: KeyboardLayout) -> (KeyboardLayout, KeyboardLayout) {
+        func cyrillicLayout(_ l: KeyboardLayout) -> Bool {
+            ["ru", "uk", "be", "bg", "sr", "mk", "kk"].contains(l.primaryLanguage ?? "")
+        }
+        guard cyrillicLayout(source) != cyrillicLayout(target) else { return (source, target) }
+        var cyr = 0, lat = 0
+        for scalar in selection.unicodeScalars {
+            switch scalar.value {
+            case 0x0400...0x04FF: cyr += 1
+            case 0x41...0x5A, 0x61...0x7A: lat += 1
+            default: break
+            }
+        }
+        guard cyr != lat else { return (source, target) }
+        let textIsCyrillic = cyr > lat
+        if textIsCyrillic == cyrillicLayout(source) { return (source, target) }
+        return (target, source)
     }
 
     /// Keycode that produces `char` under the CURRENT layout, so synthetic

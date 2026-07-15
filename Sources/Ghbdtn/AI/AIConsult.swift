@@ -30,6 +30,7 @@ extension AutoSwitchEngine {
             model: settings.aiModel
         )
         let request = AILayoutRequest(asTyped: asTyped, candidates: candidateTexts, context: "")
+        let twinTexts = candidateTexts
 
         Task { [weak self] in
             guard let self else { return }
@@ -40,9 +41,23 @@ extension AutoSwitchEngine {
                       let target = candidateLayouts.first(where: { $0.id == response.chosenLayoutID })
                 else { return }
 
+                // Layout conversion is deterministic: the ONLY legitimate
+                // correction is the chosen layout's twin of the same physical
+                // keys. A verdict whose text differs is the model translating
+                // or paraphrasing, not fixing the layout — that is exactly how
+                // a correctly-typed loanword got "converted" to its English
+                // meaning («фетч» → "fetch", twin "atnx"). Reject those; the
+                // twin text itself is used for the injection so capitalization
+                // stays faithful to the keys actually pressed.
+                let twin = twinTexts[target.id] ?? ""
+                guard response.correctedText.lowercased() == twin.lowercased() else {
+                    Log.info("AI verdict rejected: \"\(response.correctedText)\" is not the \(target.id) twin \"\(twin)\" of \"\(asTyped)\"")
+                    return
+                }
+
                 let decision = Decider.Decision(
                     source: source, target: target,
-                    originalText: asTyped, correctedText: response.correctedText,
+                    originalText: asTyped, correctedText: twin,
                     confident: true, viaAI: true
                 )
                 await MainActor.run {
@@ -57,6 +72,17 @@ extension AutoSwitchEngine {
                     guard Decider.aiVerdictPlausible(decision.correctedText,
                                                      language: targetLang) else {
                         Log.info("AI verdict rejected: \"\(decision.correctedText)\" implausible in \(targetLang)")
+                        return
+                    }
+                    // Second gate: the model's context-free choice alone must
+                    // not convert tokens no local signal can judge («лут» →
+                    // "ken", "i'm" → «шэь») — see aiEscalatedVerdictAllowed.
+                    guard Decider.aiEscalatedVerdictAllowed(
+                        typedText: asTyped,
+                        sourceLanguage: source.primaryLanguage ?? "en",
+                        twinText: decision.correctedText,
+                        targetLanguage: targetLang) else {
+                        Log.info("AI verdict rejected: no local signal for \"\(asTyped)\" → \"\(decision.correctedText)\"")
                         return
                     }
                     // The safety gate lives in the engine (it owns the buffer
