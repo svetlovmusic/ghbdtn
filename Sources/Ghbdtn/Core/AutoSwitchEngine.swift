@@ -269,7 +269,7 @@ final class AutoSwitchEngine {
                 buffer.veto(rejected, weight: WordBuffer.vetoThreshold)
             }
             LanguageScorer.shared.learnNegative(word: auto.text, language: auto.sourceLang)
-            Log.info("⌘Z after auto-conversion: rejection learned for \"\(auto.text)\"")
+            Log.info("⌘Z after auto-conversion: rejection learned", sensitive: "\"\(auto.text)\"")
         }
         lastConversionOriginal = nil
         lastAutoConversion = nil
@@ -295,7 +295,7 @@ final class AutoSwitchEngine {
         guard asTyped.lowercased() == pending.text.lowercased() else { return }
         buffer.veto(asTyped, weight: WordBuffer.vetoThreshold)
         LanguageScorer.shared.learnNegative(word: pending.text, language: pending.sourceLang)
-        Log.info("Delete-and-retype after auto-conversion: rejection learned for \"\(pending.text)\"")
+        Log.info("Delete-and-retype after auto-conversion: rejection learned", sensitive: "\"\(pending.text)\"")
     }
 
     /// The character this keystroke contributes as a word boundary, or nil

@@ -179,6 +179,36 @@ final class UpdateChecker: ObservableObject {
         return false
     }
 
+    /// Manual check with a modal result dialog — used by the tray menu item
+    /// and the About tab. Always answers with a window: "up to date", "update
+    /// available (install now?)" or the error.
+    func checkNowInteractive() {
+        checkNow(userInitiated: true) { [weak self] status in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                NSApp.activate(ignoringOtherApps: true)
+                let alert = NSAlert()
+                if let update = self.available {
+                    alert.messageText = "Доступна версия \(update.version)"
+                    alert.informativeText = "У вас установлена \(self.currentVersion). Обновить сейчас? Приложение перезапустится автоматически."
+                    alert.addButton(withTitle: "Обновить")
+                    alert.addButton(withTitle: "Позже")
+                    if alert.runModal() == .alertFirstButtonReturn {
+                        self.installAvailableUpdate()
+                    }
+                } else if status.hasPrefix("Не удалось") {
+                    alert.messageText = "Не удалось проверить обновления"
+                    alert.informativeText = status
+                    alert.runModal()
+                } else {
+                    alert.messageText = "Установлена актуальная версия"
+                    alert.informativeText = "ghbdtn \(self.currentVersion) — это последняя версия."
+                    alert.runModal()
+                }
+            }
+        }
+    }
+
     // MARK: - Self-update
 
     /// Download the .dmg of `available`, verify the staged app, then swap the

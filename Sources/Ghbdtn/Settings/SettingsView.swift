@@ -3,6 +3,9 @@ import AppKit
 
 struct SettingsView: View {
     @EnvironmentObject var settings: Settings
+    /// Window content height — computed by AppDelegate: 960pt, capped at 90%
+    /// of the screen's visible height so the window always fits.
+    var height: CGFloat = 960
 
     var body: some View {
         TabView {
@@ -12,9 +15,84 @@ struct SettingsView: View {
             HotkeysTab().tabItem { Label("Хоткеи", systemImage: "command") }
             AITab().tabItem { Label("ИИ-слой", systemImage: "brain") }
             VoiceTab().tabItem { Label("Голос", systemImage: "mic") }
+            AboutTab().tabItem { Label("О программе", systemImage: "info.circle") }
         }
         .padding(.top, 6)
-        .frame(width: 560, height: 640)
+        .frame(width: 616, height: height)
+    }
+}
+
+private extension View {
+    /// Pointing-hand cursor on hover — so links feel like links, not buttons.
+    func linkCursor() -> some View {
+        onHover { inside in
+            if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+        }
+    }
+}
+
+// MARK: - About
+
+private struct AboutTab: View {
+    private var versionLine: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        return "Версия \(short) (сборка \(build))"
+    }
+    private static let repoURL = URL(string: "https://github.com/svetlovmusic/ghbdtn")!
+    private static let releasesURL = URL(string: "https://github.com/svetlovmusic/ghbdtn/releases")!
+
+    var body: some View {
+        Form {
+            Section {
+                HStack(spacing: 14) {
+                    Image(systemName: "keyboard.badge.ellipsis")
+                        .font(.system(size: 40))
+                        .foregroundColor(.accentColor)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("ghbdtn").font(.title2).bold()
+                        Text(versionLine).font(.caption).foregroundColor(.secondary)
+                    }
+                    Spacer()
+                }
+                .padding(.vertical, 6)
+                Text("Локальная утилита для macOS: автоматически исправляет текст, набранный не в той раскладке, конвертирует по хоткею, правит целые предложения ИИ-слоем и вставляет надиктованный текст (Whisper). Нажатия анализируются в памяти и никуда не отправляются.")
+                    .font(.callout)
+            }
+
+            Section("Автор") {
+                Text("**svetlovmusic**. Автопереключение раскладки — давняя идея, знакомая по Punto Switcher; это независимая реализация с нуля. Идея объединить в одной локальной утилите голосовой ввод, ручную коррекцию ввода и ИИ-автокоррекцию целых предложений и текста — авторская.")
+                    .font(.callout)
+                Text("Лицензия MIT — используйте, изменяйте и распространяйте свободно.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
+            Section("Обновления и ссылки") {
+                VStack(spacing: 12) {
+                    HStack(spacing: 28) {
+                        Link("Репозиторий на GitHub", destination: Self.repoURL)
+                            .linkCursor()
+                        Link("Что нового (релизы)", destination: Self.releasesURL)
+                            .linkCursor()
+                    }
+                    Text("Приложение и так проверяет обновления раз в сутки (отключается в «Общих»); кнопка покажет окно с результатом и предложит обновиться в один клик.")
+                        .font(.caption).foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                    Button {
+                        UpdateChecker.shared.checkNowInteractive()
+                    } label: {
+                        Label("Проверить обновления", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    .controlSize(.large)
+                    .fixedSize()
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 4)
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
     }
 }
 
@@ -36,6 +114,7 @@ private struct GeneralTab: View {
             }
             Section {
                 PermissionRow()
+                MicPermissionRow()
             }
         }
         .formStyle(.grouped)
@@ -62,6 +141,39 @@ private struct PermissionRow: View {
         }
         .onReceive(Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()) { _ in
             trusted = Permissions.hasAccessibility()
+        }
+    }
+}
+
+/// Microphone permission status + the right action for its state. Used in
+/// «Общие» (next to the Accessibility row) and in «Голос» (after the engine
+/// block). Needed only for dictation.
+private struct MicPermissionRow: View {
+    @State private var granted = Permissions.microphoneAuthorized()
+
+    var body: some View {
+        HStack {
+            Image(systemName: granted == true ? "checkmark.shield.fill"
+                    : (granted == false ? "exclamationmark.shield.fill" : "questionmark.circle"))
+                .foregroundColor(granted == true ? .green : (granted == false ? .orange : .secondary))
+            VStack(alignment: .leading) {
+                Text("Доступ к микрофону")
+                Text(granted == true ? "Разрешён"
+                        : (granted == false ? "Запрещён — диктовка не сможет слышать"
+                                            : "Ещё не запрашивался — нужен только для диктовки"))
+                    .font(.caption).foregroundColor(.secondary)
+            }
+            Spacer()
+            if granted == nil {
+                Button("Запросить доступ") {
+                    Permissions.requestMicrophone { granted = $0 }
+                }
+            } else if granted == false {
+                Button("Открыть настройки") { Permissions.openMicrophoneSettings() }
+            }
+        }
+        .onReceive(Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()) { _ in
+            granted = Permissions.microphoneAuthorized()
         }
     }
 }
@@ -506,12 +618,21 @@ private struct AITab: View {
                 }
 
                 Section("Промпт коррекции") {
+                    Picker("Автор текста", selection: $settings.correctionAuthorGender) {
+                        ForEach(CorrectionAuthorGender.allCases) { g in
+                            Text(g.title).tag(g)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Text("Меняет пункт 7 промпта: в русском прошедшем времени род автора важен («сделал» / «сделала»). Остальной текст не трогается.")
+                        .font(.caption).foregroundColor(.secondary)
                     TextEditor(text: $settings.aiCorrectionPrompt)
                         .font(.system(size: 12, design: .monospaced))
                         .frame(minHeight: 130)
                     HStack {
                         Button("Сбросить к стандартному") {
-                            settings.aiCorrectionPrompt = Settings.defaultCorrectionPrompt
+                            settings.aiCorrectionPrompt =
+                                Settings.defaultCorrectionPrompt(gender: settings.correctionAuthorGender)
                         }
                         Spacer()
                     }
@@ -638,6 +759,12 @@ private struct VoiceTab: View {
                 }
             }
 
+            Section {
+                MicPermissionRow()
+                Text("Микрофон нужен только для диктовки: запись начинается по хоткею и распознаётся выбранным движком (локальный — полностью офлайн, звук никуда не уходит). Без доступа панель записи будет молчать.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+
             Section("Проверка") {
                 HStack {
                     Button {
@@ -660,12 +787,6 @@ private struct VoiceTab: View {
                 }
                 Text("Результат появится здесь, а не в тексте — удобно сравнивать локальный и облачный движки.")
                     .font(.caption).foregroundColor(.secondary)
-            }
-
-            Section {
-                Button("Запросить доступ к микрофону") {
-                    DictationController.shared.requestMicrophoneAccessIfNeeded()
-                }
             }
         }
         .formStyle(.grouped)

@@ -51,7 +51,8 @@ extension AutoSwitchEngine {
                 // stays faithful to the keys actually pressed.
                 let twin = twinTexts[target.id] ?? ""
                 guard response.correctedText.lowercased() == twin.lowercased() else {
-                    Log.info("AI verdict rejected: \"\(response.correctedText)\" is not the \(target.id) twin \"\(twin)\" of \"\(asTyped)\"")
+                    Log.info("AI verdict rejected: not the \(target.id) layout twin",
+                             sensitive: "\"\(response.correctedText)\" ≠ \"\(twin)\" for \"\(asTyped)\"")
                     return
                 }
 
@@ -71,7 +72,8 @@ extension AutoSwitchEngine {
                     let targetLang = target.primaryLanguage ?? "en"
                     guard Decider.aiVerdictPlausible(decision.correctedText,
                                                      language: targetLang) else {
-                        Log.info("AI verdict rejected: \"\(decision.correctedText)\" implausible in \(targetLang)")
+                        Log.info("AI verdict rejected: implausible in \(targetLang)",
+                                 sensitive: "\"\(decision.correctedText)\"")
                         return
                     }
                     // Second gate: the model's context-free choice alone must
@@ -82,7 +84,8 @@ extension AutoSwitchEngine {
                         sourceLanguage: source.primaryLanguage ?? "en",
                         twinText: decision.correctedText,
                         targetLanguage: targetLang) else {
-                        Log.info("AI verdict rejected: no local signal for \"\(asTyped)\" → \"\(decision.correctedText)\"")
+                        Log.info("AI verdict rejected: no local signal",
+                                 sensitive: "\"\(asTyped)\" → \"\(decision.correctedText)\"")
                         return
                     }
                     // The safety gate lives in the engine (it owns the buffer

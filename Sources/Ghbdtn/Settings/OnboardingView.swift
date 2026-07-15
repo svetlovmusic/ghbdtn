@@ -18,7 +18,7 @@ struct OnboardingView: View {
             Image(systemName: "keyboard.badge.ellipsis")
                 .font(.system(size: 44))
                 .foregroundStyle(.tint)
-            Text("Ghbdtn (Привет)")
+            Text("Ghbdtn")
                 .font(.largeTitle.bold())
             Text("Автоматически исправляет текст, набранный не в той раскладке — прямо на лету.")
                 .multilineTextAlignment(.center)

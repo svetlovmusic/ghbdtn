@@ -75,6 +75,33 @@ enum ConvertTrigger: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+/// Whose voice the correction prompt assumes for first-person text — swaps
+/// rule 7 of the prompt (grammatical gender matters in Russian past tense).
+enum CorrectionAuthorGender: String, CaseIterable, Identifiable, Codable {
+    case male
+    case female
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .male: return "Мужчина"
+        case .female: return "Женщина"
+        }
+    }
+
+    /// Rule 7 of the correction prompt for this gender. Kept as exact, known
+    /// strings so the gender picker can swap one for the other inside a
+    /// user-edited prompt without touching anything else.
+    var promptParagraph: String {
+        switch self {
+        case .male:
+            return "7. Автор текста — мужчина. Если текст выглядит написанным от первого лица, используй мужской род: «задолбался», «устал», «пошёл», «сделал». Если в побитом тексте видна женская форма, считай её ошибкой распознавания/набора и исправляй на мужскую, если контекст не указывает на цитату или чужую речь."
+        case .female:
+            return "7. Автор текста — женщина. Если текст выглядит написанным от первого лица, используй женский род: «задолбалась», «устала», «пошла», «сделала». Если в побитом тексте видна мужская форма, считай её ошибкой распознавания/набора и исправляй на женскую, если контекст не указывает на цитату или чужую речь."
+        }
+    }
+}
+
 /// A user-recordable global shortcut (Carbon keycode + Cocoa modifier mask).
 struct Hotkey: Codable, Equatable {
     var keyCode: UInt32
@@ -131,6 +158,9 @@ final class Settings: ObservableObject {
     /// User-editable instructions for the on-demand text-correction ("recovery")
     /// pass. The JSON response contract is appended in code, not here.
     @Published var aiCorrectionPrompt: String
+    /// Author gender assumed by the correction prompt (rule 7); changing it
+    /// swaps that rule inside `aiCorrectionPrompt` in place.
+    @Published var correctionAuthorGender: CorrectionAuthorGender
     /// Only consult the cloud model when the local detector is unsure.
     @Published var aiOnlyWhenUncertain: Bool
     /// Not persisted to defaults — mirrored from Keychain.
@@ -170,6 +200,7 @@ final class Settings: ObservableObject {
             Keys.aiBaseURL: "https://api.openai.com/v1",
             Keys.aiModel: "gpt-4.1-mini",
             Keys.aiCorrectionPrompt: Settings.defaultCorrectionPrompt,
+            Keys.correctionAuthorGender: CorrectionAuthorGender.male.rawValue,
             Keys.aiOnlyWhenUncertain: true,
             Keys.voiceEnabled: false,
             Keys.voiceEngine: "local",
@@ -193,18 +224,20 @@ final class Settings: ObservableObject {
         excludedBundleIDs = defaults.stringArray(forKey: Keys.excludedBundleIDs) ?? Settings.defaultExclusions
 
         manualConvertHotkey = Settings.decodeHotkey(defaults.data(forKey: Keys.manualConvertHotkey))
-            ?? Hotkey(keyCode: 0x31, modifiers: UInt32(controlKeyMask | optionKeyMask), enabled: true) // ⌃⌥Space
+            ?? Hotkey(keyCode: 0x24, modifiers: UInt32(cmdKeyMask | optionKeyMask), enabled: true) // ⌥⌘⏎
         whisperHotkey = Settings.decodeHotkey(defaults.data(forKey: Keys.whisperHotkey))
-            ?? Hotkey(keyCode: 0x09, modifiers: UInt32(controlKeyMask | optionKeyMask), enabled: true) // ⌃⌥V
+            ?? Hotkey(keyCode: 0x24, modifiers: UInt32(shiftKeyMask), enabled: true) // ⇧⏎
         voiceCancelHotkey = Settings.decodeHotkey(defaults.data(forKey: Keys.voiceCancelHotkey))
             ?? Hotkey(keyCode: 0x35, modifiers: 0, enabled: true) // ⎋ Escape
         correctionHotkey = Settings.decodeHotkey(defaults.data(forKey: Keys.correctionHotkey))
-            ?? Hotkey(keyCode: 0x0F, modifiers: UInt32(controlKeyMask | optionKeyMask), enabled: true) // ⌃⌥R
+            ?? Hotkey(keyCode: 0x24, modifiers: UInt32(shiftKeyMask | cmdKeyMask), enabled: true) // ⇧⌘⏎
 
         aiEnabled = defaults.bool(forKey: Keys.aiEnabled)
         aiBaseURL = defaults.string(forKey: Keys.aiBaseURL) ?? "https://api.openai.com/v1"
         aiModel = defaults.string(forKey: Keys.aiModel) ?? "gpt-4.1-mini"
         aiCorrectionPrompt = defaults.string(forKey: Keys.aiCorrectionPrompt) ?? Settings.defaultCorrectionPrompt
+        correctionAuthorGender = CorrectionAuthorGender(
+            rawValue: defaults.string(forKey: Keys.correctionAuthorGender) ?? "") ?? .male
         aiOnlyWhenUncertain = defaults.bool(forKey: Keys.aiOnlyWhenUncertain)
         aiAPIKey = Keychain.get(account: "ai-api-key") ?? ""
 
@@ -251,6 +284,10 @@ final class Settings: ObservableObject {
         persist($aiBaseURL) { self.defaults.set($0, forKey: Keys.aiBaseURL) }
         persist($aiModel) { self.defaults.set($0, forKey: Keys.aiModel) }
         persist($aiCorrectionPrompt) { self.defaults.set($0, forKey: Keys.aiCorrectionPrompt) }
+        persist($correctionAuthorGender) {
+            self.defaults.set($0.rawValue, forKey: Keys.correctionAuthorGender)
+            self.applyCorrectionGender($0)
+        }
         persist($aiOnlyWhenUncertain) { self.defaults.set($0, forKey: Keys.aiOnlyWhenUncertain) }
         persist($aiAPIKey) { Keychain.set($0, account: "ai-api-key") }
         persist($voiceEnabled) { self.defaults.set($0, forKey: Keys.voiceEnabled) }
@@ -265,6 +302,17 @@ final class Settings: ObservableObject {
     }
 
     // MARK: - Helpers
+
+    /// Swap rule 7 of the correction prompt to the chosen gender's variant.
+    /// Only the two known paragraphs are recognized — a fully rewritten custom
+    /// prompt is left untouched (the stored choice still drives «Сбросить к
+    /// стандартному»).
+    private func applyCorrectionGender(_ gender: CorrectionAuthorGender) {
+        let other: CorrectionAuthorGender = gender == .male ? .female : .male
+        guard aiCorrectionPrompt.contains(other.promptParagraph) else { return }
+        aiCorrectionPrompt = aiCorrectionPrompt.replacingOccurrences(
+            of: other.promptParagraph, with: gender.promptParagraph)
+    }
 
     private static func encodeHotkey(_ hk: Hotkey) -> Data {
         (try? JSONEncoder().encode(hk)) ?? Data()
@@ -283,43 +331,50 @@ final class Settings: ObservableObject {
 
     /// Default, user-editable instructions for the correction pass. Edit in
     /// Settings → «ИИ-слой» → «Промпт коррекции»; «Сбросить к стандартному»
-    /// restores this text.
-    static let defaultCorrectionPrompt = """
-    Ты аккуратно исправляешь русский и смешанный русско-английский текст, набранный небрежно.
+    /// restores this text (with the currently selected author gender in
+    /// rule 7 — see CorrectionAuthorGender).
+    static func defaultCorrectionPrompt(gender: CorrectionAuthorGender) -> String {
+        """
+        Ты аккуратно исправляешь русский и смешанный русско-английский текст, набранный небрежно.
 
-    На входе может быть сильная «каша»: опечатки, переставленные/задвоенные/пропущенные буквы, неправильная раскладка, лишние или пропущенные пробелы, слипшиеся или разорванные слова, пропущенные заглавные буквы и знаки препинания.
+        На входе может быть сильная «каша»: опечатки, переставленные/задвоенные/пропущенные буквы, неправильная раскладка, лишние или пропущенные пробелы, слипшиеся или разорванные слова, пропущенные заглавные буквы и знаки препинания.
 
-    Задача: восстановить наиболее вероятный исходный текст, который человек хотел написать, правильным и естественным русским языком.
+        Задача: восстановить наиболее вероятный исходный текст, который человек хотел написать, правильным и естественным русским языком.
 
-    Правила:
+        Правила:
 
-    1. Исправляй механику текста:
-       — опечатки;
-       — пропущенные, лишние и переставленные буквы;
-       — слипшиеся и разорванные слова;
-       — неправильную раскладку;
-       — пунктуацию и заглавные буквы.
+        1. Исправляй механику текста:
+           — опечатки;
+           — пропущенные, лишние и переставленные буквы;
+           — слипшиеся и разорванные слова;
+           — неправильную раскладку;
+           — пунктуацию и заглавные буквы.
 
-    2. Не меняй смысл, стиль и степень грубости/разговорности. Не делай текст более вежливым, литературным или нейтральным.
+        2. Не меняй смысл, стиль и степень грубости/разговорности. Не делай текст более вежливым, литературным или нейтральным.
 
-    3. Разрешено восстанавливать пропущенные буквы, пробелы и очевидные части слов, если без них фраза получается неестественной или грамматически кривой.
+        3. Разрешено восстанавливать пропущенные буквы, пробелы и очевидные части слов, если без них фраза получается неестественной или грамматически кривой.
 
-    4. Не добавляй новые смысловые слова. Но если слово явно восстановлено из побитого фрагмента, это не считается добавлением.
+        4. Не добавляй новые смысловые слова. Но если слово явно восстановлено из побитого фрагмента, это не считается добавлением.
 
-    5. При выборе между несколькими вариантами выбирай тот, который:
-       — грамматически естественнее;
-       — чаще встречается в живой русской речи;
-       — лучше соответствует контексту;
-       — требует минимального изменения смысла, а не минимального количества символов.
+        5. При выборе между несколькими вариантами выбирай тот, который:
+           — грамматически естественнее;
+           — чаще встречается в живой русской речи;
+           — лучше соответствует контексту;
+           — требует минимального изменения смысла, а не минимального количества символов.
 
-    6. Не выбирай буквальный вариант, если он грамматически хуже. Например, если фрагмент можно прочитать как «я как задолбался» или «я так задолбался», выбирай «я так задолбался», потому что это естественная русская конструкция.
+        6. Не выбирай буквальный вариант, если он грамматически хуже. Например, если фрагмент можно прочитать как «я как задолбался» или «я так задолбался», выбирай «я так задолбался», потому что это естественная русская конструкция.
 
-    7. Уже правильный текст оставляй без изменений.
+        \(gender.promptParagraph)
 
-    8. Сохраняй сленг, мат, имена, термины, числа, эмодзи и переносы строк.
+        8. Уже правильный текст оставляй без изменений.
 
-    9. Если фраза неоднозначна, выбери наиболее вероятное прочтение. Не выводи объяснения, варианты или комментарии — только исправленный текст.
-    """
+        9. Сохраняй сленг, мат, имена, термины, числа, эмодзи и переносы строк.
+
+        10. Если фраза неоднозначна, выбери наиболее вероятное прочтение. Не выводи объяснения, варианты или комментарии — только исправленный текст.
+        """
+    }
+
+    static let defaultCorrectionPrompt = defaultCorrectionPrompt(gender: .male)
 
     private enum Keys {
         static let autoSwitchEnabled = "autoSwitchEnabled"
@@ -339,6 +394,7 @@ final class Settings: ObservableObject {
         static let aiBaseURL = "aiBaseURL"
         static let aiModel = "aiModel"
         static let aiCorrectionPrompt = "aiCorrectionPrompt"
+        static let correctionAuthorGender = "correctionAuthorGender"
         static let aiOnlyWhenUncertain = "aiOnlyWhenUncertain"
         static let voiceEnabled = "voiceEnabled"
         static let voiceEngine = "voiceEngine"

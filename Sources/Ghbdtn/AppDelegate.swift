@@ -132,7 +132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appItem.submenu = appMenu
         appMenu.addItem(withTitle: "Скрыть", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Выйти из Ghbdtn (Привет)",
+        appMenu.addItem(withTitle: "Выйти из Ghbdtn",
                         action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 
         // Edit menu — the whole reason this exists.
@@ -156,7 +156,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let button = statusItem.button else { return }
         let active = engine.isActive && settings.autoSwitchEnabled
         let symbol = active ? "keyboard.badge.ellipsis" : "keyboard"
-        if let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Ghbdtn (Привет)") {
+        if let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Ghbdtn") {
             image.isTemplate = true
             button.image = image
         } else {
@@ -239,12 +239,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         applyShortcut(settings.whisperHotkey, to: dictate)
         menu.addItem(dictate)
 
+        // Settings — its own group.
+        menu.addItem(.separator())
         let prefs = NSMenuItem(title: "Настройки…", action: #selector(openSettings), keyEquivalent: ",")
         prefs.target = self
         menu.addItem(prefs)
 
-        // Update line: an actionable "upgrade to X" when a newer release is
-        // known, otherwise a manual "check now".
+        // Version + updates — its own group.
+        menu.addItem(.separator())
         if UpdateChecker.shared.installing {
             let busy = NSMenuItem(title: "Загружается обновление…", action: nil, keyEquivalent: "")
             busy.isEnabled = false
@@ -260,15 +262,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             check.target = self
             menu.addItem(check)
         }
-
         // Non-clickable info line: the app version, so you can tell at a glance
         // which build is installed on a given machine (action: nil → greyed out).
         let version = NSMenuItem(title: menuVersionString, action: nil, keyEquivalent: "")
         version.isEnabled = false
         menu.addItem(version)
 
+        // Quit — its own group.
         menu.addItem(.separator())
-        let quit = NSMenuItem(title: "Выйти из Ghbdtn (Привет)", action: #selector(quit), keyEquivalent: "q")
+        let quit = NSMenuItem(title: "Выйти из Ghbdtn", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
 
@@ -328,18 +330,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openSettings() {
         if settingsWindow == nil {
-            let view = SettingsView().environmentObject(settings)
+            // Target height, capped so the window always fits on small
+            // screens: 90% of the visible screen height wins when smaller.
+            let preferred: CGFloat = 960
+            let screenLimit = (NSScreen.main?.visibleFrame.height ?? preferred) * 0.9
+            let height = min(preferred, screenLimit)
+            let view = SettingsView(height: height).environmentObject(settings)
             let hosting = NSHostingController(rootView: view)
             // Build the window with its final styleMask up front — mutating
             // styleMask *after* assigning content makes AppKit re-lay-out the
             // content ignoring the titlebar, sliding it up under the title.
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 560, height: 640),
+                contentRect: NSRect(x: 0, y: 0, width: 616, height: height),
                 styleMask: [.titled, .closable, .miniaturizable],
                 backing: .buffered, defer: false
             )
             window.contentViewController = hosting
-            window.title = "Настройки Ghbdtn (Привет)"
+            window.title = "Настройки Ghbdtn"
             window.center()
             window.isReleasedWhenClosed = false
             settingsWindow = window
@@ -361,7 +368,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 backing: .buffered, defer: false
             )
             window.contentViewController = hosting
-            window.title = "Добро пожаловать в Ghbdtn (Привет)"
+            window.title = "Добро пожаловать в Ghbdtn"
             window.center()
             window.isReleasedWhenClosed = false
             onboardingWindow = window
@@ -375,9 +382,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func checkForUpdates() {
-        UpdateChecker.shared.checkNow(userInitiated: true) { status in
-            Notifier.show(title: "Ghbdtn (Привет)", body: status)
-        }
+        UpdateChecker.shared.checkNowInteractive()
     }
 
     @objc private func installUpdate() {
