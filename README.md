@@ -125,7 +125,7 @@ git clone <repo-url> ghbdtn && cd ghbdtn
 репозиторий и появились на другой машине:
 
 ```bash
-./tools/save-learned.sh    # влить выученное в Resources/seed-learned.json, закоммитить и запушить
+./tools/save-learned.sh    # влить выученное в Sources/Ghbdtn/Resources/seed-learned.json, закоммитить и запушить
 ```
 
 Скрипт отгружает только **подтверждённое** обучение (слово встречалось ≥2 раз),
@@ -133,6 +133,10 @@ git clone <repo-url> ghbdtn && cd ghbdtn
 старте подмешивает этот `seed-learned.json` — значит после `git pull &&
 ./install.sh` на другом компьютере оно **уже знает** всё, чему вы его научили.
 Не хотите тащить эти слова на конкретную машину — ставьте с `--clean`.
+
+> Репозиторий публичный — помните, что `seed-learned.json` виден всем: это
+> часть вашего личного словаря. Перед `save-learned.sh` стоит глянуть, что
+> именно уезжает (`cat ~/Library/Application\ Support/Ghbdtn/learned.json`).
 
 ---
 
