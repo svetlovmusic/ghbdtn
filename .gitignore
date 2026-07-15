@@ -26,3 +26,21 @@ dist/
 
 # OpenAI key for the correction eval — NEVER commit the pasted key.
 tools/correct-eval/config.json
+
+# Secrets & credentials — never commit these (belt-and-suspenders).
+.env
+.env.*
+*.p12
+*.pfx
+*.pem
+*.key
+*.cer
+*.crt
+*.keystore
+*.mobileprovision
+*.provisionprofile
+secrets.json
+credentials.json
+**/*secret*.json
+id_rsa
+id_ed25519

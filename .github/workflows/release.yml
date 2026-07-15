@@ -8,12 +8,20 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+# Least privilege by default. The job below re-grants only `contents: write`,
+# and only after the `release` environment's required reviewer approves.
 permissions:
-  contents: write            # create/update releases and upload assets
+  contents: read
 
 jobs:
   build-dmg:
     runs-on: macos-14        # Apple Silicon runner (matches the arm64 app)
+    # A protected environment gates the write-scoped run behind a manual
+    # approval (repo → Settings → Environments → release → required reviewers),
+    # so a stray/forged `v*` tag can't publish a Release unattended.
+    environment: release
+    permissions:
+      contents: write        # create/update releases and upload assets
     env:
       # Runner locale can be non-UTF-8, where bash 3.2 folds bytes of a
       # trailing "…" into a variable name ($VAR… → unbound). UTF-8 + braced
@@ -21,7 +29,10 @@ jobs:
       LANG: en_US.UTF-8
       LC_ALL: en_US.UTF-8
     steps:
-      - uses: actions/checkout@v4
+      # Actions are pinned to a commit SHA (not a moving @v4/@v2 major tag) so a
+      # retagged/compromised action can't silently enter the release pipeline.
+      # The trailing comment records the version each SHA corresponds to.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
       - name: Toolchain info
         run: swift --version && sw_vers
@@ -29,12 +40,12 @@ jobs:
       # whisper.xcframework is pinned+checksummed in fetch-whisper.sh, so cache
       # it by that file's hash to avoid re-downloading ~48 MB every run.
       - name: Cache whisper.xcframework
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
         with:
           path: Vendor
           key: whisper-${{ hashFiles('tools/fetch-whisper.sh') }}
 
-      # OPTIONAL: sign with a real certificate for the friendlier Gatekeeper
+      # OPTIONAL: sign with a real certificate for a friendlier Gatekeeper
       # ("unidentified developer" + right-click Open) instead of ad-hoc
       # ("damaged"). Set repo secrets SIGNING_P12_BASE64 (base64 of a .p12
       # export of the "Ghbdtn Local Signing" identity) and SIGNING_P12_PASSWORD.
@@ -50,20 +61,39 @@ jobs:
           fi
           KC="$RUNNER_TEMP/ghbdtn-ci.keychain-db"
           security create-keychain -p ci "$KC"
-          security set-keychain-settings "$KC"
+          security set-keychain-settings -lut 900 "$KC"   # auto-lock after 15 min
           security unlock-keychain -p ci "$KC"
           security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
           echo "$P12" | base64 --decode > "$RUNNER_TEMP/id.p12"
-          security import "$RUNNER_TEMP/id.p12" -k "$KC" -P "${P12_PW:-}" -T /usr/bin/codesign -A
+          # -T authorizes ONLY codesign to use the key (no blanket -A).
+          security import "$RUNNER_TEMP/id.p12" -k "$KC" -P "${P12_PW:-}" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s -k ci "$KC" >/dev/null
+          rm -f "$RUNNER_TEMP/id.p12"
           echo "Imported signing identity into CI keychain."
 
       - name: Build .dmg
         run: ./tools/make-dist.sh
 
+      # Lock and remove the signing keychain before any third-party action runs,
+      # so a later step can't read the imported key.
+      - name: Lock down signing keychain
+        if: always()
+        run: |
+          KC="$RUNNER_TEMP/ghbdtn-ci.keychain-db"
+          if [ -f "$KC" ]; then
+            security lock-keychain "$KC" || true
+            security delete-keychain "$KC" || true
+          fi
+          rm -f "$RUNNER_TEMP/id.p12" || true
+
       - name: Attach .dmg to the release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2
         with:
           files: dist/*.dmg
           fail_on_unmatched_files: true
+
+# NOTE: real Developer ID signing + notarization is not wired in — the .dmg is
+# ad-hoc signed and the app self-signed, a deliberate limitation until a paid
+# Apple Developer account is available (see docs/SECURITY.md). With no P12 secret
+# set, no private key is present on the runner to leak.

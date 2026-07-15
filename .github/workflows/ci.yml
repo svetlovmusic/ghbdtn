@@ -1,0 +1,51 @@
+name: CI
+
+# Build the app and run the headless self-test on every push and PR to main,
+# so detection/logic regressions are caught before a release tag is cut.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-selftest:
+    runs-on: macos-14
+    env:
+      LANG: en_US.UTF-8
+      LC_ALL: en_US.UTF-8
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Toolchain info
+        run: swift --version && sw_vers
+
+      - name: Cache whisper.xcframework
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
+        with:
+          path: Vendor
+          key: whisper-${{ hashFiles('tools/fetch-whisper.sh') }}
+
+      - name: Fetch whisper.xcframework
+        run: ./tools/fetch-whisper.sh
+
+      - name: Build (release)
+        run: swift build -c release
+
+      # The self-test needs at least an en + ru keyboard layout to exercise the
+      # decider. CI runners may not have ru enabled, so this is best-effort:
+      # a missing-layout skip must not fail CI, but a real assertion failure must.
+      - name: Self-test
+        run: |
+          set -o pipefail
+          swift run -c release Ghbdtn --selftest 2>&1 | tee selftest.log || {
+            if grep -q "Need at least 2 layouts\|Could not find both" selftest.log; then
+              echo "::warning::self-test skipped — CI runner lacks the ru/en layouts"
+              exit 0
+            fi
+            exit 1
+          }
