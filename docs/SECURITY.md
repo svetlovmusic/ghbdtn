@@ -5,13 +5,12 @@ the Mac App Store. This document states the current trust model honestly.
 
 ## Reporting a vulnerability
 
-Please report privately, **not** in a public issue:
-
-- open a **GitHub Security Advisory** (repo → *Security* → *Report a vulnerability*), or
-- email the address on the maintainer's GitHub profile.
-
-Include repro steps and affected version. Expect a best-effort reply — this is
-a personal project, not a funded product.
+This is a personal project. Please report privately rather than opening a public
+issue: contact the maintainer through GitHub (`@svetlovmusic`) — e.g. a DM /
+profile contact, or a private Security Advisory once the repo is public and
+Private Vulnerability Reporting is enabled (it is not available on this private
+repo today). Include repro steps and the affected version; expect a best-effort
+reply, not an SLA.
 
 ## Current trust model (know before you install)
 

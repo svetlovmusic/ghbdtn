@@ -32,6 +32,17 @@ enum Keychain {
         }
     }
 
+    /// One-time upgrade of existing items to the stronger accessibility class:
+    /// read each present value and re-store it, so `set` re-applies
+    /// WhenUnlockedThisDeviceOnly to keys written by an older build.
+    static func upgradeAccessibility(accounts: [String]) {
+        for account in accounts {
+            if let value = get(account: account), !value.isEmpty {
+                set(value, account: account)
+            }
+        }
+    }
+
     static func get(account: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,

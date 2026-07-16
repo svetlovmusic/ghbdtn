@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // field editor in our windows and just beep (see setupMainMenu).
         setupMainMenu()
 
+        runDataMigrations()
         Notifier.requestAuthorization()
         setupStatusItem()
         setupHotkeys()
@@ -57,6 +58,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         engine.stop()
         HotkeyCenter.shared.unregisterAll()
+    }
+
+    /// Tighten data written by older builds: the file-permission and Keychain
+    /// accessibility hardening only applies to NEW writes, so existing installs
+    /// need a one-time pass. Cheap and idempotent — the chmod runs every launch;
+    /// the Keychain rewrite is gated behind a flag.
+    private func runDataMigrations() {
+        let fm = FileManager.default
+        if let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            let dir = support.appendingPathComponent("Ghbdtn", isDirectory: true)
+            try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
+            let learned = dir.appendingPathComponent("learned.json")
+            if fm.fileExists(atPath: learned.path) {
+                try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: learned.path)
+            }
+        }
+        let flag = "migratedKeychainAccessibility_v1"
+        if !UserDefaults.standard.bool(forKey: flag) {
+            Keychain.upgradeAccessibility(accounts: ["ai-api-key", "whisper-api-key"])
+            UserDefaults.standard.set(true, forKey: flag)
+        }
     }
 
     /// Apply the launch-at-login preference and reconcile the UI with the real

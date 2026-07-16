@@ -1,7 +1,10 @@
 name: CI
 
-# Build the app and run the headless self-test on every push and PR to main,
-# so detection/logic regressions are caught before a release tag is cut.
+# Build the app on every push and PR to main. The headless self-test is run
+# best-effort: GitHub macOS runners ship only a U.S. layout, and the test needs
+# an en + ru layout, so it SKIPS on CI (logged as a warning) rather than gating.
+# Treat this workflow as "does it still compile", not "regressions caught" —
+# run `swift run -c release Ghbdtn --selftest` locally for the real checks.
 on:
   push:
     branches: [main]

@@ -16,10 +16,10 @@ permissions:
 jobs:
   build-dmg:
     runs-on: macos-14        # Apple Silicon runner (matches the arm64 app)
-    # A protected environment gates the write-scoped run behind a manual
-    # approval (repo → Settings → Environments → release → required reviewers),
-    # so a stray/forged `v*` tag can't publish a Release unattended.
-    environment: release
+    # NOTE: there is deliberately NO `environment:` approval gate here. On a
+    # private repo on the free plan, required reviewers on environments aren't
+    # available, so an `environment:` line would imply protection that isn't
+    # enforced. The real gate is that only the repo owner can push a `v*` tag.
     permissions:
       contents: write        # create/update releases and upload assets
     env:
@@ -45,46 +45,14 @@ jobs:
           path: Vendor
           key: whisper-${{ hashFiles('tools/fetch-whisper.sh') }}
 
-      # OPTIONAL: sign with a real certificate for a friendlier Gatekeeper
-      # ("unidentified developer" + right-click Open) instead of ad-hoc
-      # ("damaged"). Set repo secrets SIGNING_P12_BASE64 (base64 of a .p12
-      # export of the "Ghbdtn Local Signing" identity) and SIGNING_P12_PASSWORD.
-      # Without them the build falls back to ad-hoc automatically.
-      - name: Import signing certificate (optional)
-        env:
-          P12: ${{ secrets.SIGNING_P12_BASE64 }}
-          P12_PW: ${{ secrets.SIGNING_P12_PASSWORD }}
-        run: |
-          if [ -z "${P12:-}" ]; then
-            echo "No SIGNING_P12_BASE64 secret — build.sh will use ad-hoc signing."
-            exit 0
-          fi
-          KC="$RUNNER_TEMP/ghbdtn-ci.keychain-db"
-          security create-keychain -p ci "$KC"
-          security set-keychain-settings -lut 900 "$KC"   # auto-lock after 15 min
-          security unlock-keychain -p ci "$KC"
-          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
-          echo "$P12" | base64 --decode > "$RUNNER_TEMP/id.p12"
-          # -T authorizes ONLY codesign to use the key (no blanket -A).
-          security import "$RUNNER_TEMP/id.p12" -k "$KC" -P "${P12_PW:-}" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k ci "$KC" >/dev/null
-          rm -f "$RUNNER_TEMP/id.p12"
-          echo "Imported signing identity into CI keychain."
-
-      - name: Build .dmg
+      # CI builds an AD-HOC-signed .dmg only. No signing key lives in Actions:
+      # the "Ghbdtn Local Signing" P12 secret was intentionally removed so the
+      # private key that preserves the Accessibility grant never sits next to
+      # mutable third-party actions. To ship a stable-signed release, sign
+      # LOCALLY (build.sh uses the identity in your own keychain) and upload,
+      # or run make-dist.sh locally. See docs/SECURITY.md.
+      - name: Build .dmg (ad-hoc signing)
         run: ./tools/make-dist.sh
-
-      # Lock and remove the signing keychain before any third-party action runs,
-      # so a later step can't read the imported key.
-      - name: Lock down signing keychain
-        if: always()
-        run: |
-          KC="$RUNNER_TEMP/ghbdtn-ci.keychain-db"
-          if [ -f "$KC" ]; then
-            security lock-keychain "$KC" || true
-            security delete-keychain "$KC" || true
-          fi
-          rm -f "$RUNNER_TEMP/id.p12" || true
 
       - name: Attach .dmg to the release
         if: startsWith(github.ref, 'refs/tags/')

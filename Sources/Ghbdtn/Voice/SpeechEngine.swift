@@ -79,10 +79,12 @@ final class DictationController: ObservableObject {
     private var discardRequested = false
 
     private init() {
-        capture.onLimitReached = { [weak self] in self?.handleLimitReached() }
+        capture.onLimitReached = { [weak self] in self?.handleAutoStop(reason: .limit) }
         // Input device changed/unplugged mid-dictation: the tap dies with the
-        // old format, so salvage what was captured instead of hanging "live".
-        capture.onCaptureLost = { [weak self] in self?.recognize() }
+        // old format. Salvage what was captured — but for the cloud engine that
+        // would auto-upload a recording the user never confirmed with ✓, so it
+        // takes the same cancel-and-notify path as the 5-minute limit.
+        capture.onCaptureLost = { [weak self] in self?.handleAutoStop(reason: .captureLost) }
     }
 
     /// Hotkey / tray-menu entry point: press to start, press again to
@@ -108,15 +110,27 @@ final class DictationController: ObservableObject {
 
     // MARK: - Session lifecycle
 
-    /// The recording hit AudioCapture.maxDuration (5 min). For the LOCAL engine
-    /// that just transcribes what was captured — offline, nothing leaves the
-    /// Mac. For the CLOUD engine, auto-transcribing would silently upload a
-    /// recording the user walked away from and never confirmed with ✓, so
-    /// instead cancel and tell them. A cloud upload must be a deliberate act.
-    private func handleLimitReached() {
+    private enum AutoStopReason {
+        case limit        // hit AudioCapture.maxDuration (5 min)
+        case captureLost  // input device changed/unplugged mid-dictation
+        var title: String {
+            switch self {
+            case .limit: return "Диктовка остановлена (5 мин)"
+            case .captureLost: return "Микрофон пропал во время диктовки"
+            }
+        }
+    }
+
+    /// A dictation ended on its own (not a ✓ press). For the LOCAL engine we
+    /// transcribe what was captured — offline, nothing leaves the Mac. For the
+    /// CLOUD engine, auto-transcribing would silently upload a recording the
+    /// user never confirmed with ✓, so instead cancel and tell them: a cloud
+    /// upload must be a deliberate act. Test-mode (Settings «Проверить сейчас»)
+    /// is exempt — the user explicitly asked to test the cloud engine.
+    private func handleAutoStop(reason: AutoStopReason) {
         if Settings.shared.voiceEngine == "cloud", testSink == nil {
             cancel()
-            Notifier.show(title: "Диктовка остановлена (5 мин)",
+            Notifier.show(title: reason.title,
                           body: "Облачный движок не отправляет запись автоматически — начните заново и подтвердите ✓.")
         } else {
             recognize()
