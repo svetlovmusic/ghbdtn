@@ -8,8 +8,9 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
-# Least privilege by default. The job below re-grants only `contents: write`,
-# and only after the `release` environment's required reviewer approves.
+# Least privilege by default: read-only. The build job re-grants only
+# `contents: write` for the release upload. The workflow runs only on a `v*`
+# tag or a manual dispatch, both of which only the repo owner can trigger.
 permissions:
   contents: read
 
