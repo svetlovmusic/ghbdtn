@@ -17,8 +17,10 @@ a personal project, not a funded product.
 
 - **No paid Apple Developer ID / notarization.** Releases are *self-signed*
   (identity "Ghbdtn Local Signing") and the `.dmg` is ad-hoc signed. macOS
-  Gatekeeper will warn on first launch. Prefer **right-click → Open** over
-  disabling quarantine wholesale — see the README.
+  Gatekeeper will warn on first launch. Clearing the quarantine attribute from
+  the single app bundle (`xattr -dr com.apple.quarantine /Applications/ghbdtn.app`,
+  see the README) removes it for that one app only — grant it just to a build
+  you trust (ours build from the source in this repo).
 - **The app is not sandboxed** and holds powerful TCC grants: Accessibility
   (global keyboard event tap + synthetic input) and, if you use dictation,
   Microphone. Only grant them to a build you trust.
