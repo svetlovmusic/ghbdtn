@@ -107,6 +107,19 @@ final class TextInjector {
         }
     }
 
+    /// Put `text` on the clipboard and leave it there, replacing whatever was
+    /// on it. Used when the text is delivered by some means other than ⌘V and
+    /// the clipboard is only a safety net, so no restore is scheduled — and any
+    /// restore still pending from an earlier paste is cancelled, or it would
+    /// wipe the net a moment later.
+    func copyToClipboard(_ text: String) {
+        pendingRestore?.cancel()
+        pendingRestore = nil
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+
     /// Restore the user's clipboard after the frontmost app has had time to
     /// service the paste. There is no API to observe "paste consumed", so the
     /// grace period errs long (slow apps read the pasteboard lazily); the

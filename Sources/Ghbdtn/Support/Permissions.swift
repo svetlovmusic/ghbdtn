@@ -20,6 +20,26 @@ enum Permissions {
         return AXIsProcessTrustedWithOptions(options)
     }
 
+    // MARK: - Posting synthetic events
+
+    /// May we post synthetic events at all? This is its own TCC bucket
+    /// (`kTCCServicePostEvent`), separate from the one `AXIsProcessTrusted()`
+    /// reports. Through macOS 15 an Accessibility grant implied it, so one
+    /// check covered both; treating them as one is now wrong — the app can be
+    /// trusted for Accessibility (the tap sees keystrokes, dictation
+    /// transcribes) while every `CGEvent.post` is dropped without an error and
+    /// nothing is ever typed back.
+    static func canPostEvents() -> Bool {
+        CGPreflightPostEventAccess()
+    }
+
+    /// Show the one-time system prompt for the post-event bucket and return the
+    /// current state. A no-op once the answer is on record either way.
+    @discardableResult
+    static func requestPostEventAccess() -> Bool {
+        CGRequestPostEventAccess()
+    }
+
     static func openAccessibilitySettings() {
         let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
         NSWorkspace.shared.open(url)

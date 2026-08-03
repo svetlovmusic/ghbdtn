@@ -47,6 +47,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] _ in self?.rebuildMenu() }
             .store(in: &cancellables)
 
+        // Ask for the post-event grant explicitly: it is a separate bucket from
+        // Accessibility, and asking is what puts the app on the system's list
+        // in the first place. Shows the prompt once, then reports the standing
+        // answer.
+        Permissions.requestPostEventAccess()
+        // Log both halves, not one verdict: "can read keys but can't send them"
+        // is a real state on macOS 26 and it looks exactly like a broken app.
+        Log.info("Permissions: accessibility=\(Permissions.hasAccessibility()) postEvent=\(Permissions.canPostEvents())")
+
         if Permissions.hasAccessibility() {
             startEngine()
         } else {
@@ -209,7 +218,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         toggle.state = settings.autoSwitchEnabled ? .on : .off
         menu.addItem(toggle)
 
-        if !Permissions.hasAccessibility() {
+        // Half-granted counts as not granted: with the read half only, the tap
+        // sees keystrokes but nothing can be typed back, and the app looks
+        // simply broken unless the menu says why.
+        if !Permissions.hasAccessibility() || !Permissions.canPostEvents() {
             menu.addItem(.separator())
             let warn = NSMenuItem(title: "⚠︎ Нужен доступ (Универсальный доступ)",
                                   action: #selector(showOnboarding), keyEquivalent: "")

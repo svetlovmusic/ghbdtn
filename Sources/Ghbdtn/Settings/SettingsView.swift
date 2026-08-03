@@ -124,23 +124,36 @@ private struct GeneralTab: View {
 
 private struct PermissionRow: View {
     @State private var trusted = Permissions.hasAccessibility()
+    @State private var canPost = Permissions.canPostEvents()
+
+    /// Reading keystrokes and sending them back are separate grants, and the
+    /// app needs both. Reporting only the first one would show «Разрешён» on a
+    /// system where nothing is ever typed back.
+    private var ok: Bool { trusted && canPost }
+
+    private var detail: String {
+        if !trusted { return "Требуется для перехвата клавиш" }
+        if !canPost { return "Чтение клавиш разрешено, ввод — нет: выключите и снова включите Ghbdtn в списке" }
+        return "Разрешён"
+    }
 
     var body: some View {
         HStack {
-            Image(systemName: trusted ? "checkmark.shield.fill" : "exclamationmark.shield.fill")
-                .foregroundColor(trusted ? .green : .orange)
+            Image(systemName: ok ? "checkmark.shield.fill" : "exclamationmark.shield.fill")
+                .foregroundColor(ok ? .green : .orange)
             VStack(alignment: .leading) {
                 Text("Универсальный доступ")
-                Text(trusted ? "Разрешён" : "Требуется для перехвата клавиш")
+                Text(detail)
                     .font(.caption).foregroundColor(.secondary)
             }
             Spacer()
-            if !trusted {
+            if !ok {
                 Button("Открыть настройки") { Permissions.openAccessibilitySettings() }
             }
         }
         .onReceive(Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()) { _ in
             trusted = Permissions.hasAccessibility()
+            canPost = Permissions.canPostEvents()
         }
     }
 }

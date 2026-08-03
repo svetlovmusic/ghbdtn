@@ -355,18 +355,51 @@ final class DictationController: ObservableObject {
         // the app as ⌃⌥⌘V — a meaningless shortcut — and nothing is inserted.
         // Wait for all modifiers to come up before injecting.
         Self.whenModifiersReleased {
-            if keepOnClipboard {
-                // The transcript stays on the clipboard as a safety net: if
-                // the paste didn't land in this particular app, ⌘V recovers it.
-                TextInjector.shared.paste(text, keepOnClipboard: true)
-            } else if text.count <= 24 && !text.contains("\n") {
-                // Short bursts type faster than a paste round-trip.
-                TextInjector.shared.typeUnicode(text)
+            // Posting synthetic events is its own permission, and without it
+            // every keystroke below is discarded without an error. Note it, but
+            // still try: the injection is what actually delivers the text, and
+            // a preflight that answers "no" on a system where posting works
+            // must not be the thing that stops it.
+            let canPost = Permissions.canPostEvents()
+            // How the text goes in depends on the TEXT ALONE. It used to depend
+            // on the clipboard option too — with the safety net on, even a
+            // two-word transcript was pasted — which quietly made that option
+            // decide whether dictation worked at all (see `canPasteReliably`).
+            if canPost && Self.canPasteReliably && (text.count > 24 || text.contains("\n")) {
+                TextInjector.shared.paste(text, keepOnClipboard: keepOnClipboard)
             } else {
-                TextInjector.shared.paste(text)
+                // Arm the safety net before typing, not after: if the keystrokes
+                // don't land, ⌘V is the user's way back to the transcript. When
+                // the system says we may not type at all, the clipboard is the
+                // only copy that survives, so it is written either way.
+                if keepOnClipboard || !canPost { TextInjector.shared.copyToClipboard(text) }
+                TextInjector.shared.typeUnicode(text)
             }
+            if !canPost { Self.warnEventsBlocked() }
         }
     }
+
+    /// The transcript is on the clipboard by the time this runs, so point at ⌘V
+    /// and name the reason — an empty field with no explanation is what the
+    /// half-granted permission looks like from the outside.
+    private static func warnEventsBlocked() {
+        Permissions.requestPostEventAccess()
+        Notifier.show(title: "Текст в буфере обмена — вставьте через ⌘V",
+                      body: "macOS не разрешает Ghbdtn отправлять нажатия. Включите Ghbdtn в Настройках → Конфиденциальность и безопасность → Универсальный доступ.")
+        Log.error("Dictation: no post-event access; transcript left on the clipboard")
+    }
+
+    /// Whether a ⌘V can be expected to reach the frontmost app.
+    ///
+    /// macOS 26 filters synthetic events inside WindowServer before they are
+    /// dispatched, and the filter is not all-or-nothing: bare keystrokes still
+    /// land in the focused field, while modifier-bearing ones from an app that
+    /// isn't signed with an Apple-issued identity are dropped. A paste is ⌘V,
+    /// so on 26+ the transcript is typed instead — slower for a long one, but
+    /// it arrives. Older systems keep pasting: it is one undo step and one
+    /// atomic write, which slow apps handle better than a burst of events.
+    private static let canPasteReliably: Bool = !ProcessInfo.processInfo
+        .isOperatingSystemAtLeast(OperatingSystemVersion(majorVersion: 26, minorVersion: 0, patchVersion: 0))
 
     /// True while any modifier key is physically held (HID state).
     private nonisolated static func physicalModifiersDown() -> Bool {
