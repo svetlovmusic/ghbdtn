@@ -34,6 +34,18 @@ mkdir -p "$APP/Contents/MacOS"
 mkdir -p "$APP/Contents/Resources"
 
 cp "$BUILD_DIR/$APP_NAME" "$APP/Contents/MacOS/$APP_NAME"
+
+# Strip the debug map before signing. The linker leaves STABS N_SO/N_OSO
+# entries in __LINKEDIT pointing at every .o it consumed, which bakes the
+# builder's home directory, username and full source tree into a binary that
+# then ships to strangers. Releases are built on a personal Mac, so this is a
+# privacy leak about a real person, not just noise.
+#   -S = debug symbols only. A full strip would take the symbol table and the
+#   __swift5_* reflection sections Swift needs.
+# Must run BEFORE codesign: stripping after signing invalidates the signature.
+# Note: `strings -a` does NOT read __LINKEDIT, so it reports a false clean here
+# — verify with `strings -` or a raw grep (see tools/preflight-dist.sh).
+strip -S "$APP/Contents/MacOS/$APP_NAME"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 
 # SwiftPM resource bundle with the n-gram language models. The app searches

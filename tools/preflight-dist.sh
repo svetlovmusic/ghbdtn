@@ -54,19 +54,37 @@ codesign --verify --strict --deep "$APP" 2>/dev/null \
 echo "  ✓ signature: stable identity, hardened runtime, DR pinned"
 
 # ------------------------------------------------------- traces of this Mac
-# Release builds should carry no absolute source paths, but a stray debug
-# setting or a linked object can reintroduce them — so check, do not assume.
+# Release builds should carry no absolute source paths, but the linker's debug
+# map reintroduces them on every build unless build.sh strips it.
+#
+# SCAN WITH RAW grep, NOT `strings -a`. On macOS `strings -a` skips __LINKEDIT,
+# which is exactly where the debug map lives — it reported a clean binary that
+# in fact carried 74 copies of the builder's home directory. `strings -` and a
+# byte-level grep both see it; grep needs no decisions about encoding.
+# The check is for THIS machine's identity, not for absolute paths in general:
+# the vendored whisper.framework legitimately carries /Users/runner/... from
+# GitHub's own builder, which says nothing about anyone.
 BUILD_USER="$(id -un)"
 while IFS= read -r -d '' f; do
   file "$f" | grep -q "Mach-O" || continue
-  if strings -a "$f" 2>/dev/null | grep -q "/Users/"; then
-    fail "absolute /Users/ path baked into $(basename "$f")"
+  NAME="$(basename "$f")"
+  if grep -a -q -F "$HOME" "$f" 2>/dev/null; then
+    fail "builder home directory baked into $NAME (is 'strip -S' still in build.sh?)
+    count: $(grep -a -c -F "$HOME" "$f" 2>/dev/null)"
   fi
-  if strings -a "$f" 2>/dev/null | grep -qF "$BUILD_USER"; then
-    fail "build user name '$BUILD_USER' baked into $(basename "$f")"
+  if grep -a -q -F "$BUILD_USER" "$f" 2>/dev/null; then
+    fail "build user name '$BUILD_USER' baked into $NAME"
   fi
+  # The debug map itself, independent of what its paths happen to say. Only our
+  # own code: what upstream ships inside whisper.framework is not ours to strip.
+  case "$f" in
+    */Contents/MacOS/*)
+      if nm -pa "$f" 2>/dev/null | grep -qE ' (OSO|SO) '; then
+        fail "debug map (STABS N_SO/N_OSO) left in $NAME — strip -S must run before signing"
+      fi ;;
+  esac
 done < <(find "$APP" -type f -perm -u+x -print0)
-echo "  ✓ binaries: no local paths, no build user name"
+echo "  ✓ binaries: no builder identity, no debug map"
 
 # ------------------------------------------------------------------- litter
 LITTER="$(find "$APP" \( -name '.DS_Store' -o -name '._*' -o -name '.fseventsd' \
