@@ -6,10 +6,41 @@
          are incompatible with the App Sandbox. Distribute via Developer ID,
          not the Mac App Store.
 
-         No entitlements are requested: the app drives input through a
-         CGEventTap (gated by the Accessibility TCC grant) and captures audio
-         through AVCaptureDevice (gated by the Microphone TCC grant) — neither
-         needs an entitlement here. The Apple-Events automation entitlement was
-         removed: nothing in the app sends Apple Events. -->
+         The app runs under the Hardened Runtime (build.sh passes the
+         "options runtime" flag to codesign), which is what stops another
+         process running as the same user from loading its own code into a
+         process that holds the Accessibility grant. Under the Hardened Runtime
+         microphone access needs an entitlement in addition to the TCC prompt,
+         so the one below is required for dictation to work at all.
+
+         Note for editors: XML forbids a double hyphen inside a comment, so
+         codesign flags are spelled out in words here. A stray one makes
+         AMFIUnserializeXML fail and the bundle silently loses entitlements.
+
+         Nothing else is requested: keystrokes go through a CGEventTap (gated by
+         the Accessibility TCC grant), and the Apple-Events automation
+         entitlement stays removed — nothing in the app sends Apple Events. -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+
+    <!-- Library validation is disabled because it CANNOT work with a
+         self-signed identity: it requires the process and every library it maps
+         to share a Team ID, and a Team ID is only issued with a paid Apple
+         Developer ID. Both this app and the bundled whisper.framework carry the
+         same "Ghbdtn Local Signing" signature, yet dyld still refuses the
+         framework with "different Team IDs" because neither has one.
+
+         What is kept and what is given up, plainly:
+         KEPT (this is why the Hardened Runtime is still on) - dyld ignores
+         DYLD_INSERT_LIBRARIES and friends, unsigned code cannot be executed,
+         and writable-executable memory is refused. That closes the cheap
+         injection path, which needs no permission at all.
+         GIVEN UP - a library that is signed by anyone at all may be loaded, so
+         swapping the bundled framework for a signed malicious one is not
+         blocked here. On macOS 14+ that still requires write access to the
+         installed bundle, which is separately gated by App Management.
+         Closing this last gap needs a Developer ID and nothing else. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
 </dict>
 </plist>

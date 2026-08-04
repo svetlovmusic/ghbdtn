@@ -122,6 +122,28 @@ private struct GeneralTab: View {
     }
 }
 
+/// Explains why a base URL will be refused. The gate itself lives at the point
+/// of use (CloudEndpoint), so this row is only there to make a silent refusal
+/// visible — editing it away does not re-enable the endpoint.
+private struct EndpointWarningRow: View {
+    let baseURL: String
+
+    var body: some View {
+        if let reason = CloudEndpoint.rejectionReason(baseURL) {
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundColor(.orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Запросы на этот адрес отправляться не будут")
+                    Text(reason)
+                        .font(.caption).foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+}
+
 private struct PermissionRow: View {
     @State private var trusted = Permissions.hasAccessibility()
     @State private var canPost = Permissions.canPostEvents()
@@ -133,7 +155,10 @@ private struct PermissionRow: View {
 
     private var detail: String {
         if !trusted { return "Требуется для перехвата клавиш" }
-        if !canPost { return "Чтение клавиш разрешено, ввод — нет: выключите и снова включите Ghbdtn в списке" }
+        // The post-event answer is frozen for the life of the process once
+        // anything requests it, so "toggle it in the list" is useless advice
+        // here — the value cannot change until the app restarts.
+        if !canPost { return "Чтение клавиш разрешено, ввод — нет: перезапустите Ghbdtn. Если не помогло — tccutil reset All com.ghbdtn.app" }
         return "Разрешён"
     }
 
@@ -617,6 +642,7 @@ private struct AITab: View {
                 Section("Провайдер (OpenAI-совместимый)") {
                     TextField("Base URL", text: $settings.aiBaseURL)
                         .textFieldStyle(.roundedBorder)
+                    EndpointWarningRow(baseURL: settings.aiBaseURL)
                     Picker("Модель", selection: modelSelection) {
                         ForEach(knownModels, id: \.self) { Text($0).tag($0) }
                         Text("Своя модель…").tag(customModelTag)
@@ -854,6 +880,7 @@ private struct VoiceTab: View {
     private var cloudRows: some View {
         TextField("Base URL", text: $settings.whisperCloudBaseURL)
             .textFieldStyle(.roundedBorder)
+        EndpointWarningRow(baseURL: settings.whisperCloudBaseURL)
         TextField("Модель", text: $settings.whisperCloudModel)
             .textFieldStyle(.roundedBorder)
         SecureField("API-ключ (пусто — ключ ИИ-слоя, если Base URL совпадает с ним)",

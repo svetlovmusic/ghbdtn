@@ -52,8 +52,14 @@ if ! openssl pkcs12 -export -legacy -inkey "$TMP/key.pem" -in "$TMP/cert.pem" \
     -out "$TMP/identity.p12" -name "$IDENTITY" -passout pass:ghbdtn >/dev/null 2>&1
 fi
 
-# -T /usr/bin/codesign puts codesign on the key's access list.
-security import "$TMP/identity.p12" -k "$KEYCHAIN" -P ghbdtn -T /usr/bin/codesign
+# -T /usr/bin/codesign puts codesign on the key's access list — and only
+# codesign, never -A ("any application").
+# -x marks the private key NON-EXTRACTABLE. This key is what lets a binary
+# inherit an Accessibility grant that the user already gave, so on the machine
+# that cuts releases it is the most valuable secret in the project. Without -x,
+# anything running as this user can `security export` it and walk away with a
+# skeleton key to every install; with -x the key can only be USED in place.
+security import "$TMP/identity.p12" -k "$KEYCHAIN" -P ghbdtn -x -T /usr/bin/codesign
 
 echo "✓ Identity '$IDENTITY' imported into the login keychain."
 echo

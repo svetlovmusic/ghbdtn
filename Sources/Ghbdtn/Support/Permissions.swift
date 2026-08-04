@@ -24,17 +24,27 @@ enum Permissions {
 
     /// May we post synthetic events at all? This is its own TCC bucket
     /// (`kTCCServicePostEvent`), separate from the one `AXIsProcessTrusted()`
-    /// reports. Through macOS 15 an Accessibility grant implied it, so one
-    /// check covered both; treating them as one is now wrong — the app can be
-    /// trusted for Accessibility (the tap sees keystrokes, dictation
-    /// transcribes) while every `CGEvent.post` is dropped without an error and
-    /// nothing is ever typed back.
+    /// reports. The two are independent rows in TCC; the Accessibility toggle
+    /// happens to set both for keyboard apps, which is why one check appeared
+    /// to cover both for years.
+    ///
+    /// CAUTION — this answer is only live until something calls
+    /// `requestPostEventAccess()`. That call latches the result inside
+    /// CoreGraphics for the rest of the process (SLSTCCService caches it under
+    /// a `std::call_once`), after which this function returns the frozen value
+    /// and no grant given or revoked in System Settings will move it. Unlike
+    /// `AXIsProcessTrusted()`, which is always live. Do not call the request on
+    /// a code path that runs at launch.
     static func canPostEvents() -> Bool {
         CGPreflightPostEventAccess()
     }
 
     /// Show the one-time system prompt for the post-event bucket and return the
     /// current state. A no-op once the answer is on record either way.
+    ///
+    /// Only call this from an explicit user action, and tell the user to
+    /// restart afterwards: it freezes `canPostEvents()` for this process (see
+    /// above), so whatever it latches is what the UI will report until relaunch.
     @discardableResult
     static func requestPostEventAccess() -> Bool {
         CGRequestPostEventAccess()

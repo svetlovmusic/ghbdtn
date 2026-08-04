@@ -14,6 +14,13 @@ extension AutoSwitchEngine {
     func consultAI(strokes: [KeyStroke], source: KeyboardLayout, fallback: Decider.Decision) {
         let settings = Settings.shared
         guard settings.aiEnabled, !settings.aiAPIKey.isEmpty else { return }
+        // Refuse to send a typed word anywhere but a known provider. This path
+        // is silent by design (it runs on every ambiguous word), so a rejected
+        // endpoint is logged rather than shown; the settings row names it.
+        guard CloudEndpoint.isAllowed(settings.aiBaseURL) else {
+            Log.error("AI consult blocked: \(CloudEndpoint.rejectionReason(settings.aiBaseURL) ?? "endpoint refused")")
+            return
+        }
 
         let capturedGeneration = editGeneration
         let translator = KeyTranslator.shared

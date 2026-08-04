@@ -292,7 +292,7 @@ final class DictationController: ObservableObject {
 
     private func currentEngine() -> SpeechEngine {
         let settings = Settings.shared
-        if settings.voiceEngine == "cloud" {
+        if settings.voiceEngine == "cloud", CloudEndpoint.isAllowed(settings.whisperCloudBaseURL) {
             // The dedicated dictation key falls back to the AI-layer key so
             // OpenAI users configure one key once — but ONLY when both point at
             // the same ORIGIN (scheme + host + port). Comparing host alone would
@@ -304,6 +304,15 @@ final class DictationController: ObservableObject {
             return CloudWhisperEngine(baseURL: settings.whisperCloudBaseURL,
                                       apiKey: key,
                                       model: settings.whisperCloudModel)
+        }
+        // Cloud was asked for but the endpoint is not a known provider: fall
+        // back to the local engine rather than shipping audio to whatever the
+        // defaults file happens to name. Silence here would look like the cloud
+        // engine simply working, so say it once.
+        if settings.voiceEngine == "cloud" {
+            let reason = CloudEndpoint.rejectionReason(settings.whisperCloudBaseURL) ?? "endpoint refused"
+            Log.error("Cloud dictation blocked, falling back to local: \(reason)")
+            Notifier.show(title: "Облачная диктовка отключена", body: reason)
         }
         // Snapshot the model path here on the main actor: the transcription
         // itself runs off-main and must not touch Settings/@Published state.

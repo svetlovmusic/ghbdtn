@@ -19,8 +19,16 @@ DMG="$OUT_DIR/ghbdtn-$VERSION.dmg"
 VOL="ghbdtn $VERSION"
 
 echo "▸ Building the app…"
-"$ROOT/build.sh"
+# A distributable build must never fall back to ad-hoc signing: ad-hoc's
+# designated requirement is the cdhash, so every user loses the Accessibility
+# grant on every update (issue #7). build.sh keeps the fallback for people
+# building from source; here it is forbidden.
+GHBDTN_REQUIRE_STABLE_SIGNING=1 "$ROOT/build.sh"
 [ -d "$APP" ] || { echo "✗ build did not produce $APP" >&2; exit 1; }
+
+# Refuse to package a bundle that carries traces of this machine, litter, or a
+# signature that is not the pinned one. See tools/preflight-dist.sh.
+"$ROOT/tools/preflight-dist.sh" "$APP" "$VERSION"
 
 echo "▸ Staging .dmg contents…"
 STAGING="$(mktemp -d)"
@@ -70,7 +78,23 @@ mkdir -p "$OUT_DIR"
 rm -f "$DMG"
 hdiutil create -volname "$VOL" -srcfolder "$STAGING" -ov -format UDZO "$DMG" >/dev/null
 
+# Sign the image itself, not just the app inside it. Without this the container
+# is "not signed at all" and a recipient has nothing to check before mounting.
+SIGN_SHA1="$(security find-identity -p codesigning \
+  | awk '/Ghbdtn Local Signing/ {print $2; exit}')"
+[ -n "$SIGN_SHA1" ] || { echo "✗ signing identity vanished between build and package" >&2; exit 1; }
+codesign --force --sign "$SIGN_SHA1" "$DMG"
+
+SHA256="$(shasum -a 256 "$DMG" | cut -d' ' -f1)"
+
 echo "✓ $DMG  ($(du -h "$DMG" | cut -f1))"
 echo
-echo "Send this .dmg to anyone. They: open it → drag ghbdtn.app to Applications →"
-echo "first launch via right-click → Open → grant Accessibility. Done."
+echo "SHA-256: $SHA256"
+echo
+echo "Put that hash in the release notes — it is the only thing a downloader can"
+echo "check before running the installer. Publish with:"
+echo
+echo "  gh release create v$VERSION --draft --notes-file <notes> \"$DMG\""
+echo "  gh release edit v$VERSION --draft=false"
+echo
+echo "Draft first: a published release must never exist without its .dmg attached."

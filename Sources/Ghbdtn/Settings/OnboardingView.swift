@@ -60,6 +60,14 @@ struct OnboardingView: View {
                 .controlSize(.large)
                 Text("После включения Ghbdtn в списке — окно продолжит само.")
                     .font(.caption).foregroundColor(.secondary)
+                // The common case after an update is a list entry that LOOKS
+                // enabled but no longer matches the new build's signature.
+                // Without this line the user stares at a checked box and a
+                // window insisting the box is unchecked.
+                Text("Если Ghbdtn уже есть в списке и галка стоит — удалите его кнопкой «–» и добавьте «+» заново.")
+                    .font(.caption).foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(28)

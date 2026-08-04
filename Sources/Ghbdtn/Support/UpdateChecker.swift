@@ -12,8 +12,12 @@ import Combine
 /// conditional (ETag → 304), failures are silent until the next tick.
 ///
 /// Self-update notes for this app specifically:
-///  - the release .app is signed with the same "Ghbdtn Local Signing" identity
-///    as the installed one, so the Accessibility (TCC) grant survives a swap;
+///  - releases are signed with the stable "Ghbdtn Local Signing" identity, so a
+///    swapped bundle keeps satisfying the requirement recorded in TCC and the
+///    Accessibility grant survives. This was NOT true of 0.6.0 and 0.6.1, which
+///    CI signed ad-hoc — see issue #7. It is also the prerequisite for ever
+///    turning `selfInstallEnabled` back on: with a stable identity there is
+///    finally something to pin, which ad-hoc could never offer;
 ///  - quarantine is only stamped by apps that opt into LSFileQuarantineEnabled
 ///    (browsers). We download with URLSession, so Gatekeeper never quarantines
 ///    the update and no "app is damaged" dance happens;

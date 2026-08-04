@@ -47,13 +47,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] _ in self?.rebuildMenu() }
             .store(in: &cancellables)
 
-        // Ask for the post-event grant explicitly: it is a separate bucket from
-        // Accessibility, and asking is what puts the app on the system's list
-        // in the first place. Shows the prompt once, then reports the standing
-        // answer.
-        Permissions.requestPostEventAccess()
+        // Deliberately NOT calling requestPostEventAccess() here. That call
+        // freezes the preflight answer for the whole process lifetime (see
+        // Permissions.canPostEvents), so a launch that happened while the grant
+        // was broken would keep reporting "no" even after the user fixed it —
+        // exactly what made #7 look unfixable. What actually puts the app on
+        // the system's list is the event tap, which the engine creates anyway.
         // Log both halves, not one verdict: "can read keys but can't send them"
-        // is a real state on macOS 26 and it looks exactly like a broken app.
+        // is a real state and it looks exactly like a broken app.
         Log.info("Permissions: accessibility=\(Permissions.hasAccessibility()) postEvent=\(Permissions.canPostEvents())")
 
         if Permissions.hasAccessibility() {

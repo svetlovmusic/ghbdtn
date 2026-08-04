@@ -73,15 +73,40 @@ if [ ! -f "$ENTITLEMENTS" ]; then
   exit 1
 fi
 SIGN_IDENTITY="Ghbdtn Local Signing"
+# Sign by SHA-1 FINGERPRINT, not by name. With two certificates sharing a
+# common name, `codesign --sign "<name>"` silently picks whichever comes first
+# in the search list — a namesake in the keychain would decide which key signs
+# a release. The fingerprint is unambiguous. Empty on machines that never ran
+# setup-signing.sh, which is what selects the ad-hoc branch below.
+SIGN_SHA1="$(security find-identity -p codesigning \
+  | awk -v name="$SIGN_IDENTITY" '$0 ~ name {print $2; exit}')"
+
+# --options runtime enables the Hardened Runtime. Without it any process running
+# as the same user can load its own code into a process that holds the
+# Accessibility grant, which is a cheaper path to a keylogger than stealing the
+# signing key. It also turns on library validation, so the nested
+# whisper.framework must carry the same signature — --deep does that here.
+SIGN_FLAGS=(--force --deep --options runtime --timestamp=none
+            --entitlements "$ENTITLEMENTS")
+
 # No stderr suppression and no silent fallback to an entitlement-less bundle:
 # if signing fails we want a loud error (set -e aborts).
-if security find-identity -p codesigning | grep -q "$SIGN_IDENTITY"; then
-  echo "▸ Signing (stable identity: $SIGN_IDENTITY)…"
-  codesign --force --deep --sign "$SIGN_IDENTITY" --entitlements "$ENTITLEMENTS" "$APP"
+if [ -n "$SIGN_SHA1" ]; then
+  echo "▸ Signing (stable identity: $SIGN_IDENTITY / $SIGN_SHA1)…"
+  codesign "${SIGN_FLAGS[@]}" --sign "$SIGN_SHA1" "$APP"
 else
+  # A release must never go out ad-hoc: its designated requirement is the
+  # cdhash, so every user loses the Accessibility grant on every update
+  # (issue #7). Source builds still fall back, that is the point of the flag.
+  if [ "${GHBDTN_REQUIRE_STABLE_SIGNING:-0}" = "1" ]; then
+    echo "✗ Stable signing identity '$SIGN_IDENTITY' not found, and" >&2
+    echo "  GHBDTN_REQUIRE_STABLE_SIGNING=1 forbids the ad-hoc fallback." >&2
+    echo "  Run ./tools/setup-signing.sh on the machine that cuts releases." >&2
+    exit 1
+  fi
   echo "▸ Signing (ad-hoc — run ./tools/setup-signing.sh once so the"
   echo "  Accessibility grant survives rebuilds)…"
-  codesign --force --deep --sign - --entitlements "$ENTITLEMENTS" "$APP"
+  codesign "${SIGN_FLAGS[@]}" --sign - "$APP"
 fi
 
 echo "✓ Built $APP"

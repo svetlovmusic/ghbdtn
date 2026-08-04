@@ -48,6 +48,13 @@ final class RecoveryController {
             return
         }
 
+        // This path sends the whole selection, so a wrong endpoint is the
+        // costliest of the three. Fail loudly with the reason.
+        if let reason = CloudEndpoint.rejectionReason(settings.aiBaseURL) {
+            RecoveryHUD.shared.fail(reason)
+            return
+        }
+
         inFlight = true
         RecoveryHUD.shared.working()
 

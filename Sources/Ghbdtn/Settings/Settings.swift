@@ -284,7 +284,16 @@ final class Settings: ObservableObject {
         persist($voiceCancelHotkey) { self.defaults.set(Settings.encodeHotkey($0), forKey: Keys.voiceCancelHotkey) }
         persist($correctionHotkey) { self.defaults.set(Settings.encodeHotkey($0), forKey: Keys.correctionHotkey) }
         persist($aiEnabled) { self.defaults.set($0, forKey: Keys.aiEnabled) }
-        persist($aiBaseURL) { self.defaults.set($0, forKey: Keys.aiBaseURL) }
+        persist($aiBaseURL) {
+            self.defaults.set($0, forKey: Keys.aiBaseURL)
+            // The key was issued by one provider; pointing the app at another
+            // host must not hand that provider's secret to the new one. Drop
+            // the key whenever the host changes — retyping it is cheap, a
+            // leaked key is not.
+            self.dropAPIKeyIfHostChanged(newBaseURL: $0,
+                                         hostKey: Keys.aiAPIKeyHost,
+                                         clear: { self.aiAPIKey = "" })
+        }
         persist($aiModel) { self.defaults.set($0, forKey: Keys.aiModel) }
         persist($aiCorrectionPrompt) { self.defaults.set($0, forKey: Keys.aiCorrectionPrompt) }
         persist($correctionAuthorGender) {
@@ -292,19 +301,53 @@ final class Settings: ObservableObject {
             self.applyCorrectionGender($0)
         }
         persist($aiOnlyWhenUncertain) { self.defaults.set($0, forKey: Keys.aiOnlyWhenUncertain) }
-        persist($aiAPIKey) { Keychain.set($0, account: "ai-api-key") }
+        persist($aiAPIKey) {
+            Keychain.set($0, account: "ai-api-key")
+            self.rememberKeyHost($0, baseURL: self.aiBaseURL, hostKey: Keys.aiAPIKeyHost)
+        }
         persist($voiceEnabled) { self.defaults.set($0, forKey: Keys.voiceEnabled) }
         persist($voiceEngine) { self.defaults.set($0, forKey: Keys.voiceEngine) }
         persist($whisperModel) { self.defaults.set($0, forKey: Keys.whisperModel) }
         persist($whisperLanguage) { self.defaults.set($0, forKey: Keys.whisperLanguage) }
-        persist($whisperCloudBaseURL) { self.defaults.set($0, forKey: Keys.whisperCloudBaseURL) }
+        persist($whisperCloudBaseURL) {
+            self.defaults.set($0, forKey: Keys.whisperCloudBaseURL)
+            self.dropAPIKeyIfHostChanged(newBaseURL: $0,
+                                         hostKey: Keys.whisperAPIKeyHost,
+                                         clear: { self.whisperCloudAPIKey = "" })
+        }
         persist($whisperCloudModel) { self.defaults.set($0, forKey: Keys.whisperCloudModel) }
-        persist($whisperCloudAPIKey) { Keychain.set($0, account: "whisper-api-key") }
+        persist($whisperCloudAPIKey) {
+            Keychain.set($0, account: "whisper-api-key")
+            self.rememberKeyHost($0, baseURL: self.whisperCloudBaseURL, hostKey: Keys.whisperAPIKeyHost)
+        }
         persist($whisperHUDPlacement) { self.defaults.set($0, forKey: Keys.whisperHUDPlacement) }
         persist($whisperCopyToClipboard) { self.defaults.set($0, forKey: Keys.whisperCopyToClipboard) }
     }
 
     // MARK: - Helpers
+
+    /// Record which host an API key belongs to, so a later change of base URL
+    /// can tell "same provider, edited path" from "different provider".
+    /// Only the host is stored — never the key itself.
+    private func rememberKeyHost(_ key: String, baseURL: String, hostKey: String) {
+        guard !key.isEmpty, let host = CloudEndpoint.host(of: baseURL) else {
+            defaults.removeObject(forKey: hostKey)
+            return
+        }
+        defaults.set(host, forKey: hostKey)
+    }
+
+    /// Drop a stored API key when the base URL moves to a different host.
+    /// No-op when there is no recorded host yet (nothing to compare against)
+    /// or when the host is unchanged.
+    private func dropAPIKeyIfHostChanged(newBaseURL: String, hostKey: String, clear: () -> Void) {
+        guard let previous = defaults.string(forKey: hostKey), !previous.isEmpty else { return }
+        let current = CloudEndpoint.host(of: newBaseURL)
+        guard current != previous else { return }
+        Log.info("Cloud host changed (\(previous) → \(current ?? "—")); stored API key dropped")
+        defaults.removeObject(forKey: hostKey)
+        clear()
+    }
 
     /// Swap rule 7 of the correction prompt to the chosen gender's variant.
     /// Only the two known paragraphs are recognized — a fully rewritten custom
@@ -395,6 +438,8 @@ final class Settings: ObservableObject {
         static let correctionHotkey = "correctionHotkey"
         static let aiEnabled = "aiEnabled"
         static let aiBaseURL = "aiBaseURL"
+        /// Host the stored AI key was entered for (host only, never the key).
+        static let aiAPIKeyHost = "aiAPIKeyHost"
         static let aiModel = "aiModel"
         static let aiCorrectionPrompt = "aiCorrectionPrompt"
         static let correctionAuthorGender = "correctionAuthorGender"
@@ -404,6 +449,8 @@ final class Settings: ObservableObject {
         static let whisperModel = "whisperModel"
         static let whisperLanguage = "whisperLanguage"
         static let whisperCloudBaseURL = "whisperCloudBaseURL"
+        /// Host the stored dictation key was entered for (host only).
+        static let whisperAPIKeyHost = "whisperAPIKeyHost"
         static let whisperCloudModel = "whisperCloudModel"
         static let whisperHUDPlacement = "whisperHUDPlacement"
         static let whisperCopyToClipboard = "whisperCopyToClipboard"

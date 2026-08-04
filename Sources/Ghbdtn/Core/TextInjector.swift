@@ -15,7 +15,13 @@ final class TextInjector {
     private let source: CGEventSource?
 
     private init() {
-        source = CGEventSource(stateID: .privateState)
+        // combinedSessionState, not privateState: Apple documents privateState
+        // for "very specialized" out-of-session uses (remote control), and it
+        // keeps a modifier-state table separate from the system's. An app that
+        // checks a key equivalent against the global modifier state then does
+        // not recognize our synthetic ⌘V, while plain Unicode keystrokes still
+        // land — which is precisely the asymmetry reported in #6.
+        source = CGEventSource(stateID: .combinedSessionState)
         // Suppress local keyboard events only very briefly while we type;
         // default interval is 0.25s which feels laggy.
         source?.localEventsSuppressionInterval = 0.01
@@ -149,6 +155,19 @@ final class TextInjector {
     /// system layout says nothing about what the selected text is written in.
     func convertSelection(from source: KeyboardLayout, to target: KeyboardLayout,
                           completion: @escaping (Bool) -> Void) {
+        // The hotkey chord is still physically held when this runs: hotkeys fire
+        // on key-DOWN. A ⌘C posted now merges with the held chord and reaches
+        // the app as garbage (⌥⌘C for the default ⌥⌘⏎), so nothing is ever
+        // copied. The dictation and recovery paths already wait; this one did
+        // not, which broke selection conversion on every macOS version.
+        Self.whenModifiersReleased { [weak self] in
+            guard let self else { completion(false); return }
+            self.convertSelectionNow(from: source, to: target, completion: completion)
+        }
+    }
+
+    private func convertSelectionNow(from source: KeyboardLayout, to target: KeyboardLayout,
+                                     completion: @escaping (Bool) -> Void) {
         let pasteboard = NSPasteboard.general
         pendingRestore?.cancel()
         let savedItems = Self.snapshot(of: pasteboard)
@@ -304,6 +323,31 @@ final class TextInjector {
         if !items.isEmpty {
             pasteboard.writeObjects(items)
         }
+    }
+
+    // MARK: - Modifier gate
+
+    /// Run `action` once no hardware modifier is held. A synthetic keystroke
+    /// posted while the user still holds the hotkey chord merges with it and
+    /// arrives as a different shortcut. Gives up after ~2 s so a stuck key
+    /// cannot wedge the feature. (RecoveryController and DictationController
+    /// carry their own copies of this; unify when one of them is next touched.)
+    static func whenModifiersReleased(attemptsLeft: Int = 40, _ action: @escaping () -> Void) {
+        guard physicalModifiersDown(), attemptsLeft > 0 else { action(); return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            whenModifiersReleased(attemptsLeft: attemptsLeft - 1, action)
+        }
+    }
+
+    private static func physicalModifiersDown() -> Bool {
+        let modifierKeyCodes: [CGKeyCode] = [
+            0x37, 0x36, // ⌘ left/right
+            0x3A, 0x3D, // ⌥ left/right
+            0x3B, 0x3E, // ⌃ left/right
+            0x38, 0x3C, // ⇧ left/right
+            0x3F        // fn
+        ]
+        return modifierKeyCodes.contains { CGEventSource.keyState(.hidSystemState, key: $0) }
     }
 
     // MARK: - Private

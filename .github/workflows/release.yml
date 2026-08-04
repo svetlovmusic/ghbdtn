@@ -1,28 +1,34 @@
-name: Release .dmg
+name: Verify release build
 
-# Build ghbdtn.app into a .dmg on a macOS runner and attach it to the GitHub
-# Release whenever a version tag (vX.Y.Z) is pushed. Manual runs
-# (workflow_dispatch) build the .dmg for testing but skip the upload.
+# Proves that a version tag still compiles on a clean macOS runner.
+#
+# This workflow does NOT produce the release artifact. The signing key that
+# preserves the Accessibility grant deliberately does not live in Actions, so
+# anything CI builds can only be ad-hoc signed — and an ad-hoc release is
+# exactly what reset the grant for every user on every update (issue #7): its
+# designated requirement is the cdhash of the binary, which changes with each
+# build.
+#
+# The release .dmg is built, signed and uploaded LOCALLY by the maintainer:
+#
+#   ./tools/make-dist.sh                       # refuses to package ad-hoc
+#   gh release create vX.Y.Z --draft --notes-file <notes> dist/ghbdtn-X.Y.Z.dmg
+#   gh release edit vX.Y.Z --draft=false
+#
+# See docs/SECURITY.md for the full trust model.
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
 
-# Least privilege by default: read-only. The build job re-grants only
-# `contents: write` for the release upload. The workflow runs only on a `v*`
-# tag or a manual dispatch, both of which only the repo owner can trigger.
+# Read-only, and it stays read-only: nothing here writes to the repository or
+# touches releases any more.
 permissions:
   contents: read
 
 jobs:
-  build-dmg:
+  verify-build:
     runs-on: macos-14        # Apple Silicon runner (matches the arm64 app)
-    # NOTE: there is deliberately NO `environment:` approval gate here. On a
-    # private repo on the free plan, required reviewers on environments aren't
-    # available, so an `environment:` line would imply protection that isn't
-    # enforced. The real gate is that only the repo owner can push a `v*` tag.
-    permissions:
-      contents: write        # create/update releases and upload assets
     env:
       # Runner locale can be non-UTF-8, where bash 3.2 folds bytes of a
       # trailing "…" into a variable name ($VAR… → unbound). UTF-8 + braced
@@ -31,7 +37,7 @@ jobs:
       LC_ALL: en_US.UTF-8
     steps:
       # Actions are pinned to a commit SHA (not a moving @v4/@v2 major tag) so a
-      # retagged/compromised action can't silently enter the release pipeline.
+      # retagged/compromised action can't silently enter the pipeline.
       # The trailing comment records the version each SHA corresponds to.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
@@ -46,23 +52,17 @@ jobs:
           path: Vendor
           key: whisper-${{ hashFiles('tools/fetch-whisper.sh') }}
 
-      # CI builds an AD-HOC-signed .dmg only. No signing key lives in Actions:
-      # the "Ghbdtn Local Signing" P12 secret was intentionally removed so the
-      # private key that preserves the Accessibility grant never sits next to
-      # mutable third-party actions. To ship a stable-signed release, sign
-      # LOCALLY (build.sh uses the identity in your own keychain) and upload,
-      # or run make-dist.sh locally. See docs/SECURITY.md.
-      - name: Build .dmg (ad-hoc signing)
-        run: ./tools/make-dist.sh
+      - name: Fetch whisper.xcframework
+        run: ./tools/fetch-whisper.sh
 
-      - name: Attach .dmg to the release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2
-        with:
-          files: dist/*.dmg
-          fail_on_unmatched_files: true
+      - name: Build
+        run: swift build -c release
 
-# NOTE: real Developer ID signing + notarization is not wired in — the .dmg is
-# ad-hoc signed and the app self-signed, a deliberate limitation until a paid
-# Apple Developer account is available (see docs/SECURITY.md). With no P12 secret
-# set, no private key is present on the runner to leak.
+      - name: Regression checks
+        run: .build/release/Ghbdtn --selftest
+
+# NOTE: real Developer ID signing + notarization is still not wired in — that
+# needs a paid Apple Developer account. Consequences, spelled out in
+# docs/SECURITY.md: downloads stay quarantined (the one-time xattr step), and
+# library validation cannot be enforced because a self-signed identity has no
+# Team ID. The Hardened Runtime itself IS enabled.
