@@ -88,7 +88,7 @@ if [ ! -f "$ENTITLEMENTS" ]; then
   exit 1
 fi
 if [ -n "$SIGN_SHA1" ]; then
-  echo "▸ Signing with Developer ID ($DEVELOPER_TEAM_ID)…"
+  echo "▸ Signing with Developer ID…"
   codesign --force --sign "$SIGN_SHA1" --timestamp --options runtime \
     "$APP/Contents/Frameworks/whisper.framework"
   codesign --force --sign "$SIGN_SHA1" --timestamp --options runtime \

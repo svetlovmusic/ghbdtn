@@ -12,7 +12,7 @@ reproduction steps and the affected version; expect a best-effort reply, not an 
 ## Current trust model (know before you install)
 
 - **Developer ID and Apple notarization.** Release builds use Developer ID
-  Application for team `DFB46VG2X3`. Both the app and DMG are notarized, with
+  Application for the project's signing team. Both the app and DMG are notarized, with
   tickets stapled so they remain available after copying the app and offline.
   The app identifier is `com.ghbdtn.app`. Older releases through 0.6.2 predate
   this distribution process; upgrade to the first Developer ID release manually.
