@@ -109,7 +109,10 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: notarization-diagnostics
-          path: dist/notarization-*/**/*.json
+          path: |
+            dist/notarization-*/**/*.json
+            dist/notarization-*/**/*.log
+            dist/notarization-*/**/submission-id.txt
           if-no-files-found: ignore
           retention-days: 7
 
