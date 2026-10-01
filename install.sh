@@ -1,16 +1,8 @@
 #!/bin/bash
 # install.sh — build ghbdtn from source and install it to /Applications.
 #
-# Why build from source instead of shipping a .app: the app is signed locally
-# (no paid Apple Developer ID / notarization), so a *downloaded* prebuilt .app
-# would be quarantined by Gatekeeper ("can't be opened / is damaged"). An app
-# you build locally is never quarantined — so a one-command source build is the
-# smoothest way to install on any Mac.
-#
 # Usage:
-#   ./install.sh                  # build (ad-hoc signed) and install
-#   ./install.sh --stable-signing # + create a stable self-signed identity so the
-#                                 #   Accessibility grant survives future updates
+#   ./install.sh                  # build and install locally
 #   ./install.sh --clean          # ship WITHOUT the pre-taught learned words
 #                                 #   (Resources/seed-learned.json); start blank
 #   ./install.sh --no-launch      # don't open the app / Settings afterward
@@ -23,12 +15,10 @@ SRC_APP="$ROOT/$APP_NAME.app"
 DEST="/Applications/$APP_NAME.app"
 MIN_MACOS="13.3"
 
-STABLE_SIGNING="no"
 DO_LAUNCH="yes"
 CLEAN="no"
 for arg in "$@"; do
   case "$arg" in
-    --stable-signing) STABLE_SIGNING="yes" ;;
     --no-launch)      DO_LAUNCH="no" ;;
     --clean)          CLEAN="yes" ;;
     -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
@@ -65,14 +55,7 @@ if ! xcode-select -p >/dev/null 2>&1 || ! command -v swift >/dev/null 2>&1; then
 fi
 ok "Swift toolchain present"
 
-# 3. Optional stable signing (grant survives rebuilds/updates) -------------
-if [ "$STABLE_SIGNING" = "yes" ]; then
-  say "Setting up a stable self-signed identity…"
-  "$ROOT/tools/setup-signing.sh"
-  echo "  (On the build below, click **Always Allow** on the keychain prompt.)"
-fi
-
-# 4. Build (fetches whisper.cpp on first run, then compiles + bundles) ------
+# 3. Build (fetches whisper.cpp on first run, then compiles + bundles) ------
 say "Building — first run downloads ~48 MB of whisper.cpp (checksum-verified)…"
 if [ "$CLEAN" = "yes" ]; then
   say "Clean install: shipped learned-words seed will be excluded."
@@ -82,7 +65,7 @@ else
 fi
 [ -d "$SRC_APP" ] || die "Build did not produce $SRC_APP"
 
-# 5. Install into /Applications (stable path keeps the Accessibility grant) -
+# 4. Install into /Applications (stable path keeps the Accessibility grant) -
 say "Installing to $DEST…"
 pkill -x "$APP_NAME" 2>/dev/null || true
 sleep 0.3
@@ -90,7 +73,7 @@ rm -rf "$DEST"
 cp -R "$SRC_APP" "$DEST"
 ok "Installed $APP_NAME $(defaults read "$DEST/Contents/Info" CFBundleShortVersionString 2>/dev/null || echo '') to /Applications"
 
-# 6. Launch + point the user at the one manual step ------------------------
+# 5. Launch + point the user at the one manual step ------------------------
 if [ "$DO_LAUNCH" = "yes" ]; then
   open "$DEST"
   sleep 1

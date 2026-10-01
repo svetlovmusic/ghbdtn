@@ -1,100 +1,67 @@
 #!/bin/bash
-# make-dist.sh — build a drag-to-Applications .dmg for non-technical users.
-#
-# Produces dist/ghbdtn-<version>.dmg containing ghbdtn.app, an Applications
-# shortcut, and a plain-language install note.
-#
-# NOTE ON GATEKEEPER: the app is signed locally (no paid Apple Developer ID /
-# notarization), so a *downloaded* .dmg is quarantined — the recipient must do a
-# one-time bypass on first launch (right-click → Open → Open, or System Settings
-# → Privacy & Security → "Open Anyway"). Fully warning-free requires notarizing
-# with a $99/yr Apple Developer account.
+# Build, sign, notarize and verify a distributable DMG. No unsigned fallback.
+# Usage: NOTARY_PROFILE=ghbdtn-notary ./tools/make-dist.sh
 set -euo pipefail
-
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/ghbdtn.app"
-VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$ROOT/Resources/Info.plist" 2>/dev/null || echo 0)"
+VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$ROOT/Resources/Info.plist")"
 OUT_DIR="$ROOT/dist"
 DMG="$OUT_DIR/ghbdtn-$VERSION.dmg"
-VOL="ghbdtn $VERSION"
+: "${NOTARY_PROFILE:?Set NOTARY_PROFILE; see docs/RELEASING.md}"
+export GHBDTN_REQUIRE_DEVELOPER_ID=1
+# shellcheck source=tools/signing-config.sh
+source "$ROOT/tools/signing-config.sh"
+resolve_signing_identity
+AUTH=(--keychain-profile "$NOTARY_PROFILE")
+if [ -n "${NOTARY_KEYCHAIN:-}" ]; then AUTH+=(--keychain "$NOTARY_KEYCHAIN"); fi
+# Validate credentials before doing the expensive build. No credentials in logs.
+xcrun notarytool history "${AUTH[@]}" --output-format json >/dev/null
+mkdir -p "$OUT_DIR"
+WORK="$(mktemp -d "$OUT_DIR/.package.XXXXXX")"
+MOUNT="$WORK/mounted"
+cleanup() {
+  if mount | grep -Fq " on $MOUNT "; then hdiutil detach "$MOUNT" >/dev/null || true; fi
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
+LOG_DIR="$(mktemp -d "$OUT_DIR/notarization-$VERSION.XXXXXX")"
 
-echo "▸ Building the app…"
-# A distributable build must never fall back to ad-hoc signing: ad-hoc's
-# designated requirement is the cdhash, so every user loses the Accessibility
-# grant on every update (issue #7). build.sh keeps the fallback for people
-# building from source; here it is forbidden.
-GHBDTN_REQUIRE_STABLE_SIGNING=1 "$ROOT/build.sh"
-[ -d "$APP" ] || { echo "✗ build did not produce $APP" >&2; exit 1; }
-
-# Refuse to package a bundle that carries traces of this machine, litter, or a
-# signature that is not the pinned one. See tools/preflight-dist.sh.
+"$ROOT/build.sh"
 "$ROOT/tools/preflight-dist.sh" "$APP" "$VERSION"
+# Staple the app itself as well as the DMG, so copied apps and self-updates
+# retain the ticket when the container is no longer present.
+"$ROOT/tools/notarize.sh" "$APP" "$LOG_DIR/app"
+spctl --assess --type execute --verbose=2 "$APP"
 
-echo "▸ Staging .dmg contents…"
-STAGING="$(mktemp -d)"
-trap 'rm -rf "$STAGING"' EXIT
-cp -R "$APP" "$STAGING/"
-ln -s /Applications "$STAGING/Applications"
-
-cat > "$STAGING/❗️ ПРОЧТИ — установка.txt" <<'EOF'
+mkdir -p "$WORK/contents"
+ditto "$APP" "$WORK/contents/ghbdtn.app"
+ln -s /Applications "$WORK/contents/Applications"
+cat > "$WORK/contents/Установка.txt" <<'NOTE'
 Установка ghbdtn
 ================
+1. Перетащите ghbdtn.app в папку Applications (Программы).
+2. Откройте ghbdtn из Программ.
+3. Разрешите Универсальный доступ в Системных настройках →
+   Конфиденциальность и безопасность. Для диктовки разрешите Микрофон.
 
-1) Перетащите  ghbdtn.app  →  в папку Applications (ярлык рядом).
-
-2) ПЕРВЫЙ запуск (нужен один раз):
-   Приложение подписано без платного сертификата Apple, поэтому macOS
-   ставит на скачанное метку карантина и при запуске ругается
-   («не удаётся открыть» / «повреждено»). Снимите метку одной строкой
-   в Терминале (Программы → Утилиты → Терминал):
-
-   xattr -dr com.apple.quarantine /Applications/ghbdtn.app
-
-   Эта команда снимает карантин ТОЛЬКО с ghbdtn.app (не трогает систему и
-   другие программы) — то есть подтверждает запуск, минуя проверку первого
-   старта Gatekeeper. Ставьте так только сборки, которым доверяете
-   (наши собираются из открытого кода github.com/svetlovmusic/ghbdtn).
-   После команды приложение открывается обычным двойным кликом.
-
-   Без Терминала: после первой неудачной попытки запуска —
-   Системные настройки → Конфиденциальность и безопасность →
-   внизу кнопка «Открыть всё равно».
-
-3) Разрешите доступ (иначе не будет работать):
-   Системные настройки → Конфиденциальность и безопасность →
-   Универсальный доступ → включите  ghbdtn.
-   Для голосового ввода также разрешите  Микрофон.
-
-Готово. Приложение живёт в строке меню (значок клавиатуры у часов).
-Проверка: наберите  ghbdtn  → должно стать  привет.
-
-Хоткеи: ⌥⌘⏎ — ручная конвертация,  ⇧⏎ — диктовка.
-Новые версии: приложение подскажет и откроет страницу загрузки; ставьте
-обновление так же, как ставили в первый раз.
-EOF
-
-echo "▸ Creating ${DMG}…"
-mkdir -p "$OUT_DIR"
-rm -f "$DMG"
-hdiutil create -volname "$VOL" -srcfolder "$STAGING" -ov -format UDZO "$DMG" >/dev/null
-
-# Sign the image itself, not just the app inside it. Without this the container
-# is "not signed at all" and a recipient has nothing to check before mounting.
-SIGN_SHA1="$(security find-identity -p codesigning \
-  | awk '/Ghbdtn Local Signing/ {print $2; exit}')"
-[ -n "$SIGN_SHA1" ] || { echo "✗ signing identity vanished between build and package" >&2; exit 1; }
-codesign --force --sign "$SIGN_SHA1" "$DMG"
-
-SHA256="$(shasum -a 256 "$DMG" | cut -d' ' -f1)"
-
-echo "✓ $DMG  ($(du -h "$DMG" | cut -f1))"
-echo
-echo "SHA-256: $SHA256"
-echo
-echo "Put that hash in the release notes — it is the only thing a downloader can"
-echo "check before running the installer. Publish with:"
-echo
-echo "  gh release create v$VERSION --draft --notes-file <notes> \"$DMG\""
-echo "  gh release edit v$VERSION --draft=false"
-echo
-echo "Draft first: a published release must never exist without its .dmg attached."
+Приложение живёт в строке меню (значок клавиатуры у часов).
+Проверка: наберите ghbdtn → должно стать привет.
+Хоткеи: ⌥⌘⏎ — ручная конвертация, ⇧⏎ — диктовка.
+Обновления доступны через меню приложения.
+NOTE
+echo "▸ Creating signed DMG…"
+hdiutil create -volname "ghbdtn $VERSION" -srcfolder "$WORK/contents" \
+  -ov -format UDZO "$WORK/release.dmg" >/dev/null
+codesign --force --sign "$SIGN_SHA1" --timestamp "$WORK/release.dmg"
+"$ROOT/tools/notarize.sh" "$WORK/release.dmg" "$LOG_DIR/dmg"
+codesign --verify --strict -R "=$DEVELOPER_REQUIREMENT" "$WORK/release.dmg"
+spctl --assess --type open --context context:primary-signature --verbose=2 "$WORK/release.dmg"
+hdiutil attach "$WORK/release.dmg" -nobrowse -readonly -mountpoint "$MOUNT" >/dev/null
+codesign --verify --deep --strict -R "=$RELEASE_REQUIREMENT" "$MOUNT/ghbdtn.app"
+xcrun stapler validate "$MOUNT/ghbdtn.app"
+spctl --assess --type execute --verbose=2 "$MOUNT/ghbdtn.app"
+hdiutil detach "$MOUNT" >/dev/null
+# Only a fully verified artifact gets the final release filename.
+mv "$WORK/release.dmg" "$DMG"
+(cd "$OUT_DIR" && shasum -a 256 "$(basename "$DMG")" > "$(basename "$DMG").sha256")
+echo "✓ Signed and notarized: $DMG"

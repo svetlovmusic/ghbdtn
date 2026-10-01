@@ -5,54 +5,43 @@ the Mac App Store. This document states the current trust model honestly.
 
 ## Reporting a vulnerability
 
-This is a personal project. Please report privately rather than opening a public
-issue: contact the maintainer through GitHub (`@svetlovmusic`) — e.g. a DM /
-profile contact, or a private Security Advisory once the repo is public and
-Private Vulnerability Reporting is enabled (it is not available on this private
-repo today). Include repro steps and the affected version; expect a best-effort
-reply, not an SLA.
+Please report vulnerabilities privately through a GitHub Security Advisory if
+available, or through the maintainer's profile contact (`@svetlovmusic`). Include
+reproduction steps and the affected version; expect a best-effort reply, not an SLA.
 
 ## Current trust model (know before you install)
 
-- **No paid Apple Developer ID / notarization.** Releases are *self-signed* with
-  a stable identity ("Ghbdtn Local Signing"), and since 0.6.2 the `.dmg` itself
-  is signed with it too. macOS Gatekeeper will still warn on first launch,
-  because only notarization removes that. Clearing the quarantine attribute from
-  the single app bundle (`xattr -dr com.apple.quarantine /Applications/ghbdtn.app`,
-  see the README) removes it for that one app only — grant it just to a build
-  you trust (ours build from the source in this repo).
-- **Where releases are built.** The `.dmg` is built, signed and uploaded from
-  the maintainer's own Mac (`tools/make-dist.sh`). CI only verifies that the tag
-  compiles; it never produces the artifact, because the signing key
-  deliberately does not live in GitHub Actions. `tools/preflight-dist.sh` runs
-  before packaging and refuses a bundle that is ad-hoc signed, lacks the
-  Hardened Runtime, carries the pinned requirement wrong, or contains traces of
-  the build machine.
-- **What to verify before you install.** Each release note carries the SHA-256
-  of the `.dmg`. The app's designated requirement is pinned to the signing
-  certificate and must read exactly:
-  `identifier "com.ghbdtn.app" and certificate leaf = H"a361680fa2755016c6bac34435a2cba3b12b21e9"`
-  (check with `codesign -d -r- /Applications/ghbdtn.app`). Because that
-  requirement is bound to a certificate rather than to a binary hash, the
-  Accessibility grant now survives updates — and, by the same token, the private
-  key is the one secret whose theft would let a forged build inherit your grant.
-  It is stored non-extractable, offline, and never in CI.
-- **Hardened Runtime is on; library validation is not.** `build.sh` signs with
-  the Hardened Runtime, so `DYLD_*` injection and unsigned code are refused.
-  Library validation cannot be enforced: it requires the process and every
-  library it loads to share a Team ID, and a Team ID is only issued with a paid
-  Developer ID. So the bundled `whisper.framework` is loaded under
-  `com.apple.security.cs.disable-library-validation`. Replacing that framework
-  still requires write access to the installed bundle, which macOS 14+ gates
-  behind App Management.
-- **The app is not sandboxed** and holds powerful TCC grants: Accessibility
-  (global keyboard event tap + synthetic input) and, if you use dictation,
-  Microphone. Only grant them to a build you trust.
-- **Auto-update does not self-install.** Because there is no code-signing trust
-  root that proves a download came from the author, the updater only *notifies*
-  and opens the Releases page; it never downloads-and-swaps the app itself.
-  Install updates manually. (This is gated by `UpdateChecker.selfInstallEnabled`,
-  currently `false`.)
+- **Developer ID and Apple notarization.** Release builds use Developer ID
+  Application for team `DFB46VG2X3`. Both the app and DMG are notarized, with
+  tickets stapled so they remain available after copying the app and offline.
+  The app identifier is `com.ghbdtn.app`. Older releases through 0.6.2 predate
+  this distribution process; upgrade to the first Developer ID release manually.
+- **Release pipeline.** A version tag runs `.github/workflows/release.yml`:
+  build, sign nested code, preflight, notarize, staple, verify, then publish.
+  Manual workflow runs save verified artifacts without publishing. Failed
+  signing or notarization prevents publication. The same pipeline is available
+  locally via `tools/make-dist.sh`. SHA-256 accompanies each DMG.
+- **Signing credentials.** The private key is stored as a password-protected
+  PKCS#12 in GitHub Actions Secrets, with its password and notarization credentials
+  in separate secrets. A disposable runner keychain imports the key as
+  non-extractable; temporary files and the keychain are removed after the job.
+  Repository administrators and workflows using those secrets are trusted.
+- **Hardened Runtime and library validation are enabled.** The app and
+  `whisper.framework` are signed by the same Apple team. The only release
+  entitlement is microphone input; no library-validation or unsigned-code
+  exceptions are enabled. Local ad-hoc development builds are not distributable
+  releases and do not enable Hardened Runtime.
+- **The app is not sandboxed.** Accessibility is required for global keyboard
+  access and synthetic input; Microphone is required for dictation. The user
+  grants these permissions in macOS. Switching from the old signature may
+  require granting them again.
+- **Updates authenticate the publisher.** The updater verifies the DMG before
+  mounting it, then the copied app. It requires an Apple-issued Developer ID
+  for the pinned team, the expected bundle ID/version, intact nested signatures,
+  and Gatekeeper's `Notarized Developer ID` assessment. It preserves macOS
+  quarantine metadata. Replacement is prepared and checked before exiting;
+  a failed rename restores the original app. Developer builds outside the normal
+  installation path open the release page instead.
 - **Cloud AI and cloud dictation are opt-in and off by default.** With them off,
   nothing you type or say leaves the machine. API keys live in the Keychain
   (device-only, when-unlocked) and are only sent to the provider origin you
@@ -67,13 +56,7 @@ reply, not an SLA.
   provider is a code change. Changing the configured host also drops the stored
   API key, so one provider's key is never offered to another.
 
-## Roadmap to a stronger posture
+## Further improvements
 
-- Apple Developer ID certificate, Hardened Runtime (`--options runtime`),
-  signing of nested components, and notarization.
-- A Sparkle 2 updater with an embedded Ed25519 appcast key, or Developer-ID +
-  Team-ID verification in the updater, before re-enabling self-install.
 - Branch/tag protection rulesets, required PR checks, and signed commits/tags.
-
-Until those land, treat releases as "trusted because you trust this author and
-this repo", not "verified by Apple".
+- A dedicated update framework such as Sparkle for richer recovery and rollout controls.

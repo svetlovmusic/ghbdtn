@@ -1,68 +1,120 @@
-name: Verify release build
+name: Signed release
 
-# Proves that a version tag still compiles on a clean macOS runner.
-#
-# This workflow does NOT produce the release artifact. The signing key that
-# preserves the Accessibility grant deliberately does not live in Actions, so
-# anything CI builds can only be ad-hoc signed — and an ad-hoc release is
-# exactly what reset the grant for every user on every update (issue #7): its
-# designated requirement is the cdhash of the binary, which changes with each
-# build.
-#
-# The release .dmg is built, signed and uploaded LOCALLY by the maintainer:
-#
-#   ./tools/make-dist.sh                       # refuses to package ad-hoc
-#   gh release create vX.Y.Z --draft --notes-file <notes> dist/ghbdtn-X.Y.Z.dmg
-#   gh release edit vX.Y.Z --draft=false
-#
-# See docs/SECURITY.md for the full trust model.
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
 
-# Read-only, and it stays read-only: nothing here writes to the repository or
-# touches releases any more.
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  verify-build:
-    runs-on: macos-14        # Apple Silicon runner (matches the arm64 app)
+  build-dmg:
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: write
     env:
-      # Runner locale can be non-UTF-8, where bash 3.2 folds bytes of a
-      # trailing "…" into a variable name ($VAR… → unbound). UTF-8 + braced
-      # vars in the scripts both guard against it.
       LANG: en_US.UTF-8
       LC_ALL: en_US.UTF-8
+      NOTARY_PROFILE: ghbdtn-notary
     steps:
-      # Actions are pinned to a commit SHA (not a moving @v4/@v2 major tag) so a
-      # retagged/compromised action can't silently enter the pipeline.
-      # The trailing comment records the version each SHA corresponds to.
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
-      - name: Toolchain info
-        run: swift --version && sw_vers
+      - name: Check release version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)
+          if [ "$REF_TYPE" = tag ] && [ "$REF_NAME" != "v$VERSION" ]; then
+            echo "Tag $REF_NAME does not match Info.plist version $VERSION" >&2
+            exit 1
+          fi
+          echo "RELEASE_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "NOTARY_KEYCHAIN=$RUNNER_TEMP/ghbdtn-signing.keychain-db" >> "$GITHUB_ENV"
 
-      # whisper.xcframework is pinned+checksummed in fetch-whisper.sh, so cache
-      # it by that file's hash to avoid re-downloading ~48 MB every run.
+      - name: Import release credentials
+        env:
+          SIGNING_P12_BASE64: ${{ secrets.SIGNING_P12_BASE64 }}
+          SIGNING_P12_PASSWORD: ${{ secrets.SIGNING_P12_PASSWORD }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: ./tools/ci-signing.sh
+
       - name: Cache whisper.xcframework
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: Vendor
           key: whisper-${{ hashFiles('tools/fetch-whisper.sh') }}
 
-      - name: Fetch whisper.xcframework
-        run: ./tools/fetch-whisper.sh
-
-      - name: Build
-        run: swift build -c release
+      - name: Build, sign and notarize
+        run: ./tools/make-dist.sh
 
       - name: Regression checks
-        run: .build/release/Ghbdtn --selftest
+        run: |
+          set -o pipefail
+          ./ghbdtn.app/Contents/MacOS/ghbdtn --selftest 2>&1 | tee selftest.log || {
+            if grep -q 'Need at least 2 layouts\|Could not find both' selftest.log; then
+              echo '::warning::self-test skipped — runner lacks ru/en layouts'
+              exit 0
+            fi
+            exit 1
+          }
 
-# NOTE: real Developer ID signing + notarization is still not wired in — that
-# needs a paid Apple Developer account. Consequences, spelled out in
-# docs/SECURITY.md: downloads stay quarantined (the one-time xattr step), and
-# library validation cannot be enforced because a self-signed identity has no
-# Team ID. The Hardened Runtime itself IS enabled.
+      - name: Release trust checks
+        run: ./tools/test-release-trust.sh ./ghbdtn.app --notarized
+
+      - name: Save verified distribution
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ghbdtn-${{ env.RELEASE_VERSION }}
+          path: |
+            dist/*.dmg
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish release
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          DMG="dist/ghbdtn-$RELEASE_VERSION.dmg"
+          NOTES="$RUNNER_TEMP/release-notes.md"
+          printf 'Developer ID signed and notarized by Apple.\n\nSHA-256:\n```text\n' > "$NOTES"
+          cat "$DMG.sha256" >> "$NOTES"
+          printf '```\n' >> "$NOTES"
+          if DRAFT=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null); then
+            [ "$DRAFT" = true ] || { echo 'Refusing to replace a published release' >&2; exit 1; }
+            gh release upload "$RELEASE_TAG" "$DMG" "$DMG.sha256" --clobber
+          else
+            gh release create "$RELEASE_TAG" --draft --verify-tag --title "$RELEASE_TAG" \
+              --generate-notes --notes-file "$NOTES" "$DMG" "$DMG.sha256"
+          fi
+          gh release edit "$RELEASE_TAG" --draft=false
+
+      - name: Save notarization diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: notarization-diagnostics
+          path: dist/notarization-*/**/*.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Remove signing credentials
+        if: always()
+        run: |
+          security delete-keychain "${NOTARY_KEYCHAIN:-$RUNNER_TEMP/ghbdtn-signing.keychain-db}" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/ghbdtn-signing.p12" "$RUNNER_TEMP/ghbdtn-notary.p8"

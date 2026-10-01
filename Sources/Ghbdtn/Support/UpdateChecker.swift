@@ -11,18 +11,8 @@ import Combine
 /// GitHub API allows 60 req/h, so daily is far below any limit). Requests are
 /// conditional (ETag → 304), failures are silent until the next tick.
 ///
-/// Self-update notes for this app specifically:
-///  - releases are signed with the stable "Ghbdtn Local Signing" identity, so a
-///    swapped bundle keeps satisfying the requirement recorded in TCC and the
-///    Accessibility grant survives. This was NOT true of 0.6.0 and 0.6.1, which
-///    CI signed ad-hoc — see issue #7. It is also the prerequisite for ever
-///    turning `selfInstallEnabled` back on: with a stable identity there is
-///    finally something to pin, which ad-hoc could never offer;
-///  - quarantine is only stamped by apps that opt into LSFileQuarantineEnabled
-///    (browsers). We download with URLSession, so Gatekeeper never quarantines
-///    the update and no "app is damaged" dance happens;
-///  - the running bundle is replaced by a detached helper script AFTER this
-///    process exits, then relaunched.
+/// Release downloads must have our Apple Developer ID and Apple's notarization.
+/// The installed bundle is replaced only after verification, with a rollback copy.
 final class UpdateChecker: ObservableObject {
     static let shared = UpdateChecker()
 
@@ -218,20 +208,9 @@ final class UpdateChecker: ObservableObject {
 
     // MARK: - Self-update
 
-    /// Download the .dmg of `available`, verify the staged app, then swap the
-    /// installed bundle and relaunch. Any failure falls back to opening the
-    /// release page so the user is never stuck.
-    /// Self-install (download the .dmg, verify, swap the installed bundle,
-    /// relaunch) is DISABLED. Without a real code-signing trust root
-    /// (Developer ID + notarization, or a Sparkle appcast signed with an
-    /// embedded Ed25519 key), the only checks available are bundle-id, version
-    /// and `codesign --verify` — none of which prove the download came from
-    /// this author. A compromised GitHub Release could then ship a bundle that
-    /// passes, and the updater would delete the real app, strip quarantine and
-    /// run it with the app's Accessibility / input-tap / microphone TCC grants.
-    /// Until a proper trust root exists, "update" only opens the release page
-    /// so the user installs manually and stays in the loop.
-    static let selfInstallEnabled = false
+    /// Installs only releases authenticated by ReleaseTrust. Older releases
+    /// without Developer ID can still open the release page for a manual upgrade.
+    static let selfInstallEnabled = true
 
     func installAvailableUpdate() {
         guard let update = available, !installing else { return }
@@ -242,7 +221,7 @@ final class UpdateChecker: ObservableObject {
         // Only self-swap a normal /Applications install; a dev build living in
         // the repo must not be clobbered by a downloaded release.
         let dest = Bundle.main.bundlePath
-        guard let dmgURL = update.dmgURL, dest.hasPrefix("/Applications/") else {
+        guard let dmgURL = update.dmgURL, dest == "/Applications/ghbdtn.app" else {
             NSWorkspace.shared.open(update.pageURL)
             return
         }
@@ -250,7 +229,7 @@ final class UpdateChecker: ObservableObject {
         Notifier.show(title: "Загружаю обновление \(update.version)…",
                       body: "Приложение перезапустится автоматически.")
 
-        URLSession.shared.downloadTask(with: dmgURL) { [weak self] tmp, _, error in
+        URLSession.shared.downloadTask(with: dmgURL) { [weak self] tmp, response, error in
             guard let self else { return }
             let fail: (String) -> Void = { reason in
                 Log.error("Self-update failed: \(reason)")
@@ -261,7 +240,7 @@ final class UpdateChecker: ObservableObject {
                     NSWorkspace.shared.open(update.pageURL)
                 }
             }
-            guard let tmp, error == nil else {
+            guard let tmp, error == nil, (response as? HTTPURLResponse)?.statusCode == 200 else {
                 fail(error?.localizedDescription ?? "download error"); return
             }
             do {
@@ -282,59 +261,72 @@ final class UpdateChecker: ObservableObject {
         }
     }
 
-    /// Mount the dmg, verify the contained ghbdtn.app (bundle id, version,
-    /// valid code signature), copy it out to a temp staging dir, unmount.
+    /// Authenticate the container before mounting, then verify the copied app.
     private func stageApp(fromDMG dmg: URL, expectVersion: String) throws -> String {
-        let mountPoint = NSTemporaryDirectory() + "ghbdtn-update-mount-\(ProcessInfo.processInfo.processIdentifier)"
+        try ReleaseTrust.verifySignature(at: dmg.path, requirement: ReleaseTrust.developerRequirement)
+        try ReleaseTrust.verifyNotarization(at: dmg.path, diskImage: true)
+        let work = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ghbdtn-update-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: work, withIntermediateDirectories: false,
+                                                 attributes: [.posixPermissions: 0o700])
+        var keepStaging = false
+        defer { if !keepStaging { try? FileManager.default.removeItem(at: work) } }
+        let mountPoint = work.appendingPathComponent("mount").path
         let attach = Self.run(["/usr/bin/hdiutil", "attach", dmg.path, "-nobrowse", "-readonly",
                                "-mountpoint", mountPoint])
         guard attach.status == 0 else { throw UpdateError.message("hdiutil attach: \(attach.output)") }
         defer { _ = Self.run(["/usr/bin/hdiutil", "detach", mountPoint, "-force"]) }
-
         let mounted = mountPoint + "/ghbdtn.app"
-        guard FileManager.default.fileExists(atPath: mounted) else {
-            throw UpdateError.message("ghbdtn.app не найден в образе")
-        }
-        // The update must be what it claims: our bundle id, the advertised
-        // version, and an intact signature — a truncated download or a foreign
-        // artifact must never replace the installed app.
-        let info = NSDictionary(contentsOfFile: mounted + "/Contents/Info.plist")
-        guard info?["CFBundleIdentifier"] as? String == Bundle.main.bundleIdentifier,
-              info?["CFBundleShortVersionString"] as? String == expectVersion else {
-            throw UpdateError.message("образ содержит не ту версию/бандл")
-        }
-        let sign = Self.run(["/usr/bin/codesign", "--verify", "--deep", mounted])
-        guard sign.status == 0 else { throw UpdateError.message("подпись не прошла проверку: \(sign.output)") }
-
-        let staging = NSTemporaryDirectory() + "ghbdtn-update-\(expectVersion)"
-        try? FileManager.default.removeItem(atPath: staging)
-        // ditto preserves signatures, resource forks and permissions exactly.
-        let copy = Self.run(["/usr/bin/ditto", mounted, staging + "/ghbdtn.app"])
+        try ReleaseTrust.verifyApp(at: mounted, expectedVersion: expectVersion)
+        let staged = work.appendingPathComponent("ghbdtn.app").path
+        let copy = Self.run(["/usr/bin/ditto", mounted, staged])
         guard copy.status == 0 else { throw UpdateError.message("ditto: \(copy.output)") }
-        return staging + "/ghbdtn.app"
+        try ReleaseTrust.verifyApp(at: staged, expectedVersion: expectVersion)
+        keepStaging = true
+        return staged
     }
 
-    /// Hand the swap to a detached helper that waits for this process to exit,
-    /// replaces the bundle and relaunches it, then quit.
+    /// Prepare the replacement on the destination filesystem before exiting.
+    /// If a rename fails, the helper restores the original app.
     private func swapAndRelaunch(staged: String, dest: String) throws {
+        let stagingDirectory = URL(fileURLWithPath: staged).deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: stagingDirectory) }
+        let work = "/Applications/.ghbdtn-update-" + UUID().uuidString
+        try FileManager.default.createDirectory(atPath: work, withIntermediateDirectories: false,
+                                                 attributes: [.posixPermissions: 0o700])
+        var handedOff = false
+        defer { if !handedOff { try? FileManager.default.removeItem(atPath: work) } }
+        let replacement = work + "/ghbdtn.app"
+        let copy = Self.run(["/usr/bin/ditto", staged, replacement])
+        guard copy.status == 0 else { throw UpdateError.message("ditto: \(copy.output)") }
+        guard let version = available?.version else { throw UpdateError.message("Нет версии обновления") }
+        try ReleaseTrust.verifyApp(at: replacement, expectedVersion: version)
         let script = """
         #!/bin/bash
-        # ghbdtn self-update helper: $1=pid to wait for, $2=staged app, $3=dest
+        set -euo pipefail
+        # $1=pid, $2=verified replacement, $3=destination, $4=private work dir
+        rollback() {
+          if [ -d "$1/previous.app" ] && [ ! -e "$2" ]; then
+            /bin/mv "$1/previous.app" "$2"
+            /usr/bin/open "$2" || true
+          fi
+        }
+        trap 'rollback "$4" "$3"' EXIT
         while /bin/kill -0 "$1" 2>/dev/null; do /bin/sleep 0.2; done
-        /bin/rm -rf "$3"
-        /usr/bin/ditto "$2" "$3"
-        /usr/bin/xattr -dr com.apple.quarantine "$3" 2>/dev/null || true
+        /bin/mv "$3" "$4/previous.app"
+        /bin/mv "$2" "$3"
+        trap - EXIT
         /usr/bin/open "$3"
-        /bin/rm -rf "$(/usr/bin/dirname "$2")"
+        /bin/rm -rf "$4"
         """
-        let scriptPath = NSTemporaryDirectory() + "ghbdtn-update-swap.sh"
+        let scriptPath = work + "/swap.sh"
         try script.write(toFile: scriptPath, atomically: true, encoding: .utf8)
-
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: scriptPath)
         let helper = Process()
         helper.executableURL = URL(fileURLWithPath: "/bin/bash")
-        helper.arguments = [scriptPath, String(ProcessInfo.processInfo.processIdentifier), staged, dest]
-        try helper.run()   // NOT waited on — it outlives us by design
-
+        helper.arguments = [scriptPath, String(ProcessInfo.processInfo.processIdentifier), replacement, dest, work]
+        try helper.run()
+        handedOff = true
         Log.info("Self-update helper launched; exiting for swap to \(dest)")
         DispatchQueue.main.async { NSApp.terminate(nil) }
     }

@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   build-and-selftest:
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       LANG: en_US.UTF-8
       LC_ALL: en_US.UTF-8
@@ -35,6 +35,9 @@ jobs:
 
       - name: Fetch whisper.xcframework
         run: ./tools/fetch-whisper.sh
+
+      - name: Release safety tests
+        run: python3 -m unittest discover -s tests/release -p 'test_*.py'
 
       - name: Build (release)
         run: swift build -c release
