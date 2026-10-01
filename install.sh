@@ -90,7 +90,7 @@ ONE manual step — grant permission (macOS requires this, no app can do it for 
   For voice dictation, also allow Microphone when first asked.
 
 Then try it: type "ghbdtn" anywhere → it becomes "привет".
-Manual convert hotkey: ⌃⌥Space.   Dictation: ⌃⌥V.
+Manual convert hotkey: ⌥⌘⏎.   Dictation: ⇧⏎.
 
 Update later:  git pull && ./install.sh
 Uninstall:     ./uninstall.sh
