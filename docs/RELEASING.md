@@ -1,6 +1,6 @@
 # Выпуск ghbdtn
 
-Релизы используют Developer ID Application команды `DFB46VG2X3`, Hardened Runtime
+Релизы используют Developer ID Application, Hardened Runtime
 и нотариализацию Apple. Рабочие скрипты одинаковы локально и в GitHub Actions.
 
 ## Однократная настройка GitHub Actions
@@ -41,6 +41,10 @@ gh secret set SIGNING_P12_PASSWORD --repo svetlovmusic/ghbdtn
 секреты подписи и не выпускает приложение.
 
 ## Каждая новая версия
+
+В публичном описании достаточно указать Developer ID и нотариализацию Apple.
+Не публикуйте имя владельца сертификата, Team ID, Apple Account и идентификаторы
+заявок нотариализации в описаниях релизов, PR и пользовательской документации.
 
 1. Измените `CFBundleShortVersionString` и увеличьте `CFBundleVersion` в
    `Resources/Info.plist`. Добавьте описание версии в `docs/CHANGELOG.md`.
@@ -84,7 +88,7 @@ Developer ID с закрытым ключом должен быть доступ
 Сохраните отдельный профиль нотариализации (секрет вводится интерактивно):
 
 ```bash
-xcrun notarytool store-credentials ghbdtn-notary --team-id DFB46VG2X3 --apple-id '<Apple Account>'
+xcrun notarytool store-credentials ghbdtn-notary --team-id '<Team ID>' --apple-id '<Apple Account>'
 ```
 
 Либо используйте API-ключ:
