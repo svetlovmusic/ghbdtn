@@ -41,7 +41,10 @@ if sys.argv[1:3] == ['stapler', 'staple']:
 ''')
             xcrun.chmod(0o700)
             log = root / 'log'
+            # Match CI: macOS bash 3.2 parses an unbraced variable followed by
+            # Unicode punctuation differently under this UTF-8 locale.
             env = dict(os.environ, PATH=f'{root}:{os.environ["PATH"]}',
+                       LANG='en_US.UTF-8', LC_ALL='en_US.UTF-8',
                        NOTARY_PROFILE='test', TRACE=str(trace), LOG_DIR=str(log),
                        SUBMIT_EXIT=str(submit_exit), WAIT_EXIT=str(wait_exit),
                        STAPLE_EXIT=str(staple_exit), WAIT_STREAM=wait_stream,
@@ -50,7 +53,7 @@ if sys.argv[1:3] == ['stapler', 'staple']:
                        WAIT_RESPONSE=wait_response if wait_response is not None else
                            json.dumps({'status': status, 'id': self.submission_id}))
             result = subprocess.run([str(SCRIPT), str(artifact), str(log)],
-                                    env=env, capture_output=True, text=True)
+                                    env=env, capture_output=True, text=True, encoding='utf-8')
             calls = [json.loads(line) for line in trace.read_text().splitlines()]
             files = {p.name: p.read_text() for p in log.iterdir() if p.is_file()}
             return result, calls, files
@@ -69,6 +72,7 @@ if sys.argv[1:3] == ['stapler', 'staple']:
         self.assertEqual(calls[1][2], self.submission_id)
         self.assertIn('--timeout', calls[1])
         self.assertEqual(files['submission-id.txt'].strip(), self.submission_id)
+        self.assertIn(f'Waiting for Apple submission {self.submission_id}…', result.stdout)
 
     def test_rejected_never_staples(self):
         result, calls, _ = self.run_notary('Invalid')

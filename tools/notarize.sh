@@ -44,7 +44,7 @@ if [ "$SUBMIT_STATUS" -ne 0 ] || [ -z "$SUBMISSION_ID" ]; then
   exit 1
 fi
 # Save the ID before waiting: a timeout ends this script, not Apple's processing.
-echo "▸ Waiting for Apple submission $SUBMISSION_ID…"
+echo "▸ Waiting for Apple submission ${SUBMISSION_ID}…"
 WAIT_RESULT="$LOG_DIR/wait.json"
 WAIT_ERROR="$LOG_DIR/wait.stderr.log"
 WAIT_STATUS=0
