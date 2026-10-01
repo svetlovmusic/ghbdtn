@@ -1,20 +1,9 @@
 #!/bin/bash
 # preflight-dist.sh — refuse to ship a bundle that should not leave this Mac.
 #
-# Releases are now built and signed LOCALLY (the signing key never goes to CI),
-# which means the machine that produces the artifact is also the machine that
-# holds the developer's home directory. This script is the checklist that stops
-# a bad artifact from being published, so "safe" does not depend on remembering.
-#
-# It checks, and FAILS on:
-#   - ad-hoc signature, or a designated requirement that is not the pinned one
-#     (an ad-hoc release is what broke the Accessibility grant in issue #7)
-#   - a missing Hardened Runtime flag
-#   - traces of this machine in any Mach-O: /Users/... paths, the build user's
-#     name
-#   - filesystem litter: .DS_Store, ._* AppleDouble, .fseventsd, .Spotlight-V100
-#   - extended attributes on the bundle (quarantine, Finder metadata)
-#   - a version in Info.plist that disagrees with the expected one
+# Checks Developer ID, Hardened Runtime, a secure timestamp, library validation,
+# the pinned Apple team, build-machine traces, filesystem litter and version.
+# Runs before notarization; the distribution script checks Apple's ticket later.
 #
 # Usage: ./tools/preflight-dist.sh <path-to-.app> [expected-version]
 set -euo pipefail
@@ -22,11 +11,9 @@ set -euo pipefail
 APP="${1:?usage: preflight-dist.sh <path-to-.app> [expected-version]}"
 EXPECT_VERSION="${2:-}"
 
-# The designated requirement every release must carry. Pinned to the SHA-1 of
-# the "Ghbdtn Local Signing" leaf certificate: that is the only thing an
-# attacker cannot forge without the private key, and it is what lets a TCC
-# grant survive an update.
-EXPECTED_DR='identifier "com.ghbdtn.app" and certificate leaf = H"a361680fa2755016c6bac34435a2cba3b12b21e9"'
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=tools/signing-config.sh
+source "$ROOT/tools/signing-config.sh"
 
 fail() { echo "✗ $1" >&2; exit 1; }
 
@@ -44,14 +31,26 @@ case "$SIG_INFO" in
   *) fail "Hardened Runtime is not enabled (expected flags=0x10000(runtime))" ;;
 esac
 
-ACTUAL_DR="$(codesign -d -r- "$APP" 2>/dev/null | sed -n 's/^designated => //p')"
-[ "$ACTUAL_DR" = "$EXPECTED_DR" ] || fail "designated requirement mismatch
-    expected: $EXPECTED_DR
-    actual:   ${ACTUAL_DR:-<none>}"
-
-codesign --verify --strict --deep "$APP" 2>/dev/null \
-  || fail "codesign --verify --strict --deep failed"
-echo "  ✓ signature: stable identity, hardened runtime, DR pinned"
+case "$SIG_INFO" in
+  *"Timestamp="*) ;;
+  *) fail "missing secure timestamp" ;;
+esac
+codesign --verify --strict --deep -R "=$RELEASE_REQUIREMENT" "$APP" \
+  || fail "app is not signed with the expected Developer ID"
+codesign --verify --strict -R "=$DEVELOPER_REQUIREMENT" \
+  "$APP/Contents/Frameworks/whisper.framework" \
+  || fail "whisper.framework is not signed with the expected Developer ID"
+ENTITLEMENTS="$(codesign -d --entitlements :- "$APP" 2>/dev/null)"
+printf '%s' "$ENTITLEMENTS" | python3 -c '
+import plistlib, sys
+p = plistlib.loads(sys.stdin.buffer.read())
+assert p.get("com.apple.security.device.audio-input") is True, "microphone entitlement missing"
+for key in ("com.apple.security.cs.disable-library-validation", "com.apple.security.get-task-allow",
+            "com.apple.security.cs.allow-dyld-environment-variables",
+            "com.apple.security.cs.allow-unsigned-executable-memory", "com.apple.security.cs.allow-jit"):
+    assert not p.get(key), "unsafe release entitlement: " + key
+' || fail "release entitlements failed verification"
+echo "  ✓ signature: Developer ID, timestamp, hardened runtime, library validation"
 
 # ------------------------------------------------------- traces of this Mac
 # Release builds should carry no absolute source paths, but the linker's debug
@@ -61,9 +60,9 @@ echo "  ✓ signature: stable identity, hardened runtime, DR pinned"
 # which is exactly where the debug map lives — it reported a clean binary that
 # in fact carried 74 copies of the builder's home directory. `strings -` and a
 # byte-level grep both see it; grep needs no decisions about encoding.
-# The check is for THIS machine's identity, not for absolute paths in general:
-# the vendored whisper.framework legitimately carries /Users/runner/... from
-# GitHub's own builder, which says nothing about anyone.
+# Check our executables. Upstream whisper.framework contains its own CI paths
+# (/Users/runner), which coincide with our hosted runner username. Its contents
+# are pinned by fetch-whisper.sh and its signature is checked above.
 BUILD_USER="$(id -un)"
 while IFS= read -r -d '' f; do
   file "$f" | grep -q "Mach-O" || continue
@@ -83,7 +82,7 @@ while IFS= read -r -d '' f; do
         fail "debug map (STABS N_SO/N_OSO) left in $NAME — strip -S must run before signing"
       fi ;;
   esac
-done < <(find "$APP" -type f -perm -u+x -print0)
+done < <(find "$APP/Contents/MacOS" -type f -print0)
 echo "  ✓ binaries: no builder identity, no debug map"
 
 # ------------------------------------------------------------------- litter

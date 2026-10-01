@@ -44,3 +44,6 @@ credentials.json
 **/*secret*.json
 id_rsa
 id_ed25519
+
+# Apple notarization API keys
+*.p8
