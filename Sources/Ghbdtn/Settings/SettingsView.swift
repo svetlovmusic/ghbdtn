@@ -34,6 +34,7 @@ private extension View {
 // MARK: - About
 
 private struct AboutTab: View {
+    @ObservedObject private var updater = UpdateChecker.shared
     private var versionLine: String {
         let info = Bundle.main.infoDictionary
         let short = info?["CFBundleShortVersionString"] as? String ?? "?"
@@ -76,16 +77,38 @@ private struct AboutTab: View {
                         Link("Что нового (релизы)", destination: Self.releasesURL)
                             .linkCursor()
                     }
-                    Text("Приложение и так проверяет обновления раз в сутки (отключается в «Общих»); кнопка покажет окно с результатом и предложит обновиться в один клик.")
+                    Text("Новые версии проверяются раз в сутки (отключается в «Общих»). Установка — по вашему нажатию, после неё приложение перезапустится.")
                         .font(.caption).foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
-                    Button {
-                        UpdateChecker.shared.checkNowInteractive()
-                    } label: {
-                        Label("Проверить обновления", systemImage: "arrow.triangle.2.circlepath")
+                    if updater.installing {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        if let update = updater.available {
+                            Button("Обновить до \(update.version)") {
+                                updater.installAvailableUpdate()
+                            }
+                            .disabled(updater.checking)
+                            .controlSize(.large)
+                        }
+                        Button {
+                            updater.checkNowInteractive()
+                        } label: {
+                            Label(updater.checking ? "Проверяю…" : "Проверить обновления",
+                                  systemImage: "arrow.triangle.2.circlepath")
+                        }
+                        .disabled(updater.checking)
+                        .controlSize(.large)
+                        .fixedSize()
                     }
-                    .controlSize(.large)
-                    .fixedSize()
+                    if !updater.installationStatus.isEmpty {
+                        Text(updater.installationStatus)
+                            .font(.caption).foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    Text("Подпись официальных версий сохраняется при обновлениях, чтобы macOS узнавала приложение и сохраняла доступ. При переходе со старой сборки разрешения может потребоваться выдать один раз заново.")
+                        .font(.caption).foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 4)

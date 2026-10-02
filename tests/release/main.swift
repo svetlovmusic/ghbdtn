@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 let app = CommandLine.arguments[1]
 let notarized = CommandLine.arguments.contains("--notarized")
@@ -14,6 +15,37 @@ func rejects(_ label: String, _ body: () throws -> Void) {
 try ReleaseTrust.verifySignature(at: app, requirement: ReleaseTrust.appRequirement)
 checks += 1
 print("PASS: real Developer ID signature")
+// A valid Developer ID signature alone doesn't guarantee a stable TCC identity:
+// an explicit requirement could pin a build hash or a particular certificate.
+// Gate releases on the same designated requirement as the Developer ID baseline.
+func canonicalRequirement(_ requirement: SecRequirement) -> String {
+    // Generated and parsed requirements may associate the same AND clauses
+    // differently in binary form. Security's own text renderer normalizes that.
+    var text: CFString?
+    precondition(SecRequirementCopyString(requirement, [], &text) == errSecSuccess)
+    return text! as String
+}
+func designatedRequirement(_ path: String) -> SecRequirement {
+    var code: SecStaticCode?
+    precondition(SecStaticCodeCreateWithPath(URL(fileURLWithPath: path) as CFURL, [], &code) == errSecSuccess)
+    var requirement: SecRequirement?
+    precondition(SecCodeCopyDesignatedRequirement(code!, [], &requirement) == errSecSuccess)
+    return requirement!
+}
+var expectedRequirement: SecRequirement?
+precondition(SecRequirementCreateWithString(ReleaseTrust.appRequirement as CFString, [], &expectedRequirement) == errSecSuccess)
+let identity = canonicalRequirement(designatedRequirement(app))
+precondition(identity == canonicalRequirement(expectedRequirement!), "Release changed its stable permission identity")
+checks += 1
+print("PASS: stable designated requirement (no build hash or certificate fingerprint)")
+if let index = CommandLine.arguments.firstIndex(of: "--previous-app") {
+    precondition(index + 1 < CommandLine.arguments.count, "--previous-app needs a path")
+    let previous = CommandLine.arguments[index + 1]
+    try ReleaseTrust.verifySignature(at: previous, requirement: ReleaseTrust.appRequirement)
+    precondition(identity == canonicalRequirement(designatedRequirement(previous)), "Permission identity changed between releases")
+    checks += 1
+    print("PASS: previous and new release have identical permission identities")
+}
 rejects("another Apple team") {
     try ReleaseTrust.verifySignature(at: app,
         requirement: ReleaseTrust.appRequirement.replacingOccurrences(of: "DFB46VG2X3", with: "XXXXXXXXXX"))
