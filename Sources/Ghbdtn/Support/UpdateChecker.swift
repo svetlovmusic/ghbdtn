@@ -26,6 +26,8 @@ final class UpdateChecker: ObservableObject {
     @Published private(set) var available: Update?
     /// True while a download/install is running (menu shows progress state).
     @Published private(set) var installing = false
+    @Published private(set) var checking = false
+    @Published private(set) var installationStatus = ""
 
     private static let repo = "svetlovmusic/ghbdtn"
     private static let checkInterval: TimeInterval = 24 * 60 * 60
@@ -177,9 +179,12 @@ final class UpdateChecker: ObservableObject {
     /// and the About tab. Always answers with a window: "up to date", "update
     /// available (install now?)" or the error.
     func checkNowInteractive() {
+        guard !checking, !installing else { return }
+        checking = true
         checkNow(userInitiated: true) { [weak self] status in
             DispatchQueue.main.async {
                 guard let self else { return }
+                self.checking = false
                 NSApp.activate(ignoringOtherApps: true)
                 let alert = NSAlert()
                 if let update = self.available {
@@ -213,7 +218,7 @@ final class UpdateChecker: ObservableObject {
     static let selfInstallEnabled = true
 
     func installAvailableUpdate() {
-        guard let update = available, !installing else { return }
+        guard let update = available, !installing, !checking else { return }
         guard Self.selfInstallEnabled else {
             NSWorkspace.shared.open(update.pageURL)
             return
@@ -225,7 +230,10 @@ final class UpdateChecker: ObservableObject {
             NSWorkspace.shared.open(update.pageURL)
             return
         }
-        DispatchQueue.main.async { self.installing = true }
+        // Called by the menu/About tab on the main thread. Lock immediately:
+        // a queued assignment would allow two clicks to start two installers.
+        installing = true
+        installationStatus = "Загружаю версию \(update.version)…"
         Notifier.show(title: "Загружаю обновление \(update.version)…",
                       body: "Приложение перезапустится автоматически.")
 
@@ -235,6 +243,7 @@ final class UpdateChecker: ObservableObject {
                 Log.error("Self-update failed: \(reason)")
                 DispatchQueue.main.async {
                     self.installing = false
+                    self.installationStatus = "Обновление не установлено. Текущая версия сохранена."
                     Notifier.show(title: "Не удалось обновиться автоматически",
                                   body: "Открываю страницу релиза. (\(reason))")
                     NSWorkspace.shared.open(update.pageURL)
@@ -244,13 +253,19 @@ final class UpdateChecker: ObservableObject {
                 fail(error?.localizedDescription ?? "download error"); return
             }
             do {
+                self.reportInstallationStatus("Проверяю подлинность обновления…")
                 let staged = try self.stageApp(fromDMG: tmp, expectVersion: update.version)
-                try self.swapAndRelaunch(staged: staged, dest: dest)
+                self.reportInstallationStatus("Устанавливаю обновление. Приложение перезапустится…")
+                try self.swapAndRelaunch(staged: staged, dest: dest, version: update.version)
                 // swapAndRelaunch terminates the app; nothing runs after it.
             } catch {
                 fail("\(error)")
             }
         }.resume()
+    }
+
+    private func reportInstallationStatus(_ status: String) {
+        DispatchQueue.main.async { self.installationStatus = status }
     }
 
     private enum UpdateError: LocalizedError {
@@ -287,8 +302,8 @@ final class UpdateChecker: ObservableObject {
     }
 
     /// Prepare the replacement on the destination filesystem before exiting.
-    /// If a rename fails, the helper restores the original app.
-    private func swapAndRelaunch(staged: String, dest: String) throws {
+    /// If a rename or Launch Services fails, the helper restores the original app.
+    private func swapAndRelaunch(staged: String, dest: String, version: String) throws {
         let stagingDirectory = URL(fileURLWithPath: staged).deletingLastPathComponent()
         defer { try? FileManager.default.removeItem(at: stagingDirectory) }
         let work = "/Applications/.ghbdtn-update-" + UUID().uuidString
@@ -299,24 +314,30 @@ final class UpdateChecker: ObservableObject {
         let replacement = work + "/ghbdtn.app"
         let copy = Self.run(["/usr/bin/ditto", staged, replacement])
         guard copy.status == 0 else { throw UpdateError.message("ditto: \(copy.output)") }
-        guard let version = available?.version else { throw UpdateError.message("Нет версии обновления") }
         try ReleaseTrust.verifyApp(at: replacement, expectedVersion: version)
         let script = """
         #!/bin/bash
         set -euo pipefail
         # $1=pid, $2=verified replacement, $3=destination, $4=private work dir
         rollback() {
-          if [ -d "$1/previous.app" ] && [ ! -e "$2" ]; then
-            /bin/mv "$1/previous.app" "$2"
+          if [ -d "$1/previous.app" ]; then
+            # A replacement may exist if Launch Services refused to open it.
+            # Keep both copies if any recovery rename itself fails.
+            if [ -e "$2" ]; then
+              /bin/mv "$2" "$1/failed.app" || return
+            fi
+            /bin/mv "$1/previous.app" "$2" || return
             /usr/bin/open "$2" || true
+            /bin/rm -rf "$1"
           fi
         }
         trap 'rollback "$4" "$3"' EXIT
+        trap 'exit 1' HUP INT TERM
         while /bin/kill -0 "$1" 2>/dev/null; do /bin/sleep 0.2; done
         /bin/mv "$3" "$4/previous.app"
         /bin/mv "$2" "$3"
-        trap - EXIT
         /usr/bin/open "$3"
+        trap - EXIT
         /bin/rm -rf "$4"
         """
         let scriptPath = work + "/swap.sh"
