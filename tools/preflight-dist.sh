@@ -2,7 +2,7 @@
 # preflight-dist.sh — refuse to ship a bundle that should not leave this Mac.
 #
 # Checks Developer ID, Hardened Runtime, a secure timestamp, library validation,
-# the pinned Apple team, build-machine traces, filesystem litter and version.
+# the pinned Apple team, app icon, build-machine traces, filesystem litter and version.
 # Runs before notarization; the distribution script checks Apple's ticket later.
 #
 # Usage: ./tools/preflight-dist.sh <path-to-.app> [expected-version]
@@ -19,6 +19,32 @@ fail() { echo "✗ $1" >&2; exit 1; }
 
 [ -d "$APP" ] || fail "not a bundle: $APP"
 echo "▸ Preflight on $APP"
+
+# --------------------------------------------------------------------- icon
+# Finder resolves CFBundleIconFile from Contents/Resources. Catch a missing
+# resource or broken ICNS before signing off on a distributable app.
+python3 - "$APP" <<'PY' || fail "app icon metadata or ICNS resource is invalid"
+from pathlib import Path
+import plistlib, struct, subprocess, sys
+
+contents = Path(sys.argv[1]) / "Contents"
+with (contents / "Info.plist").open("rb") as stream:
+    name = plistlib.load(stream).get("CFBundleIconFile")
+assert isinstance(name, str) and name and Path(name).name == name, "CFBundleIconFile missing or invalid"
+if not name.endswith(".icns"):
+    name += ".icns"
+icon = contents / "Resources" / name
+data = icon.read_bytes()
+assert len(data) > 8 and data[:4] == b"icns", "icon is not an ICNS file"
+assert struct.unpack(">I", data[4:8])[0] == len(data), "ICNS length is invalid"
+result = subprocess.run(["/usr/bin/sips", "-g", "format", "-g", "pixelWidth",
+                         "-g", "pixelHeight", str(icon)], capture_output=True, text=True)
+assert result.returncode == 0, "macOS cannot read the icon"
+properties = dict(line.strip().split(": ", 1) for line in result.stdout.splitlines() if ": " in line)
+assert properties.get("format") == "icns", "macOS does not recognize the ICNS format"
+assert int(properties.get("pixelWidth", "0")) > 0 and int(properties.get("pixelHeight", "0")) > 0, "icon has no decodable image"
+PY
+echo "  ✓ icon: bundle metadata resolves to a valid ICNS resource"
 
 # ---------------------------------------------------------------- signature
 SIG_INFO="$(codesign -dvvv "$APP" 2>&1)"

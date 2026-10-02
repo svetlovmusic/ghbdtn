@@ -53,6 +53,7 @@ cp "$BUILD_DIR/$APP_NAME" "$APP/Contents/MacOS/$APP_NAME"
 # — verify with `strings -` or a raw grep (see tools/preflight-dist.sh).
 strip -S "$APP/Contents/MacOS/$APP_NAME"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
+cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 
 # SwiftPM resource bundle with the n-gram language models. The app searches
 # Contents/Resources/Ghbdtn_Ghbdtn.bundle/Models/ (see NgramModel.locateModel).
