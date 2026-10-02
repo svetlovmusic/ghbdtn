@@ -40,6 +40,9 @@ jobs:
           echo "RELEASE_VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "NOTARY_KEYCHAIN=$RUNNER_TEMP/ghbdtn-signing.keychain-db" >> "$GITHUB_ENV"
 
+      - name: Release safety tests
+        run: python3 -m unittest discover -s tests/release -p 'test_*.py'
+
       - name: Import release credentials
         env:
           SIGNING_P12_BASE64: ${{ secrets.SIGNING_P12_BASE64 }}
