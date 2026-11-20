@@ -68,6 +68,7 @@ final class DictationController: ObservableObject {
 
     private var hud: DictationHUDPanel?
     private var timer: Timer?
+    private var isStarting = false
     /// When set (Settings "Проверить сейчас"), the transcript is delivered
     /// here instead of being typed at the caret.
     private var testSink: ((Result<String, Error>) -> Void)?
@@ -100,7 +101,7 @@ final class DictationController: ObservableObject {
     /// Start a test dictation from Settings: same HUD and engines, but the
     /// result comes back to the caller instead of being inserted.
     func beginTest(_ sink: @escaping (Result<String, Error>) -> Void) {
-        guard state == .idle else {
+        guard state == .idle, !isStarting else {
             sink(.failure(SpeechError.transcriptionFailed("диктовка уже идёт")))
             return
         }
@@ -138,12 +139,13 @@ final class DictationController: ObservableObject {
     }
 
     private func begin(bypassEnabledCheck: Bool = false) {
-        guard state == .idle else { return }
+        guard state == .idle, !isStarting else { return }
         guard Settings.shared.voiceEnabled || bypassEnabledCheck else {
             Notifier.show(title: "Голосовой ввод выключен",
                           body: "Включите его в настройках → Голос (Whisper).")
             return
         }
+        isStarting = true
 
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
@@ -164,20 +166,29 @@ final class DictationController: ObservableObject {
     }
 
     private func beginAuthorized() {
-        // Re-check: two hotkey presses while the permission dialog was up
-        // queue two requestAccess completions — only the first may start.
-        guard state == .idle else { return }
         let engine = currentEngine()
         guard engine.isAvailable else {
             fail(SpeechError.engineUnavailable(engine.unavailabilityHint))
             return
         }
+        startCapture(retriesRemaining: 2)
+    }
+
+    private func startCapture(retriesRemaining: Int) {
         do {
             try capture.start()
         } catch {
-            fail(error)
+            if retriesRemaining > 0 {
+                // Core Audio may briefly report no usable input while switching devices.
+                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(200)) { [weak self] in
+                    self?.startCapture(retriesRemaining: retriesRemaining - 1)
+                }
+            } else {
+                fail(error)
+            }
             return
         }
+        isStarting = false
         state = .recording
         elapsed = 0
         discardRequested = false
@@ -278,6 +289,7 @@ final class DictationController: ObservableObject {
     }
 
     private func fail(_ error: Error) {
+        isStarting = false
         endSession()
         if let sink = testSink {
             testSink = nil
