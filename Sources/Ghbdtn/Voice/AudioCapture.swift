@@ -35,11 +35,12 @@ final class AudioCapture: ObservableObject {
 
     static let historyLength = 30
 
-    private let engine = AVAudioEngine()
+    private var engine: AVAudioEngine?
     private var sampleRate: Double = 0
     private var samples: [Float] = []
     private let samplesLock = NSLock()
-    private(set) var isRunning = false
+    // Written on main under samplesLock, which also protects reads in the tap.
+    private var captureID: UUID?
     private var limitFired = false
     private var configObserver: NSObjectProtocol?
 
@@ -50,35 +51,50 @@ final class AudioCapture: ObservableObject {
     /// Begin capturing from the default input device. Caller must have
     /// microphone permission already (the controller gates on it).
     func start() throws {
-        guard !isRunning else { return }
+        guard engine == nil else { return }
+        // A stopped engine can still hold the previous device's bus format.
+        // Build a new graph against the current system route for each recording.
+        let engine = AVAudioEngine()
         let input = engine.inputNode
+        let hardwareFormat = input.inputFormat(forBus: 0)
         let format = input.outputFormat(forBus: 0)
-        guard format.sampleRate > 0, format.channelCount > 0 else {
+        guard hardwareFormat.sampleRate > 0, hardwareFormat.channelCount > 0,
+              format.sampleRate > 0, format.channelCount > 0 else {
             throw SpeechError.noInputDevice
         }
-        sampleRate = format.sampleRate
+        let nativeSampleRate = format.sampleRate
+        let id = UUID()
+        self.engine = engine
+        sampleRate = nativeSampleRate
         limitFired = false
         samplesLock.lock()
-        samples.removeAll(keepingCapacity: false)
-        samples.reserveCapacity(Int(format.sampleRate * 60))
+        captureID = id
+        samples.reserveCapacity(Int(nativeSampleRate * 60))
         samplesLock.unlock()
 
-        let maxSamples = Int(format.sampleRate * Self.maxDuration)
+        let maxSamples = Int(nativeSampleRate * Self.maxDuration)
         // The tap runs on the realtime audio thread: copy samples + compute
-        // RMS there, publish UI state only via the main queue.
-        input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
-            guard let self, let data = buffer.floatChannelData else { return }
+        // RMS there, publish UI state only via the main queue. Let AVAudioEngine
+        // use the bus format without writing the queried format back to the node.
+        input.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buffer, _ in
+            guard let self, buffer.format.sampleRate == nativeSampleRate,
+                  let data = buffer.floatChannelData else { return }
             let count = Int(buffer.frameLength)
             guard count > 0 else { return }
             var rms: Float = 0
             vDSP_rmsqv(data[0], 1, &rms, vDSP_Length(count))
 
             self.samplesLock.lock()
+            guard self.captureID == id else {
+                self.samplesLock.unlock()
+                return
+            }
             self.samples.append(contentsOf: UnsafeBufferPointer(start: data[0], count: count))
             let reachedLimit = self.samples.count >= maxSamples
             self.samplesLock.unlock()
 
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.captureID == id else { return }
                 self.pushLevel(rms)
                 if reachedLimit && !self.limitFired {
                     self.limitFired = true
@@ -87,47 +103,53 @@ final class AudioCapture: ObservableObject {
             }
         }
 
-        engine.prepare()
-        do {
-            try engine.start()
-        } catch {
-            input.removeTap(onBus: 0)
-            throw error
-        }
         configObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
-            object: engine, queue: .main
+            object: engine, queue: nil
         ) { [weak self] _ in
-            guard let self, self.isRunning else { return }
-            Log.info("Audio configuration changed mid-dictation — salvaging capture")
-            self.onCaptureLost?()
+            // The notification comes from an internal audio queue. Schedule
+            // teardown asynchronously and ignore changes that predate a
+            // successful start.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.captureID == id, self.engine?.isRunning == false else { return }
+                Log.info("Audio configuration changed mid-dictation")
+                self.onCaptureLost?()
+            }
         }
-        isRunning = true
+
+        do {
+            engine.prepare()
+            try engine.start()
+            guard engine.isRunning else { throw SpeechError.noInputDevice }
+        } catch {
+            stop()
+            throw error
+        }
         startedAt = Date()
     }
 
     /// Stop capture and hand back everything recorded (mono, native rate).
     @discardableResult
     func stop() -> Recording {
-        guard isRunning else { return Recording(samples: [], sampleRate: sampleRate) }
+        guard let engine else { return Recording(samples: [], sampleRate: sampleRate) }
         if let configObserver {
             NotificationCenter.default.removeObserver(configObserver)
             self.configObserver = nil
         }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
-        isRunning = false
-        startedAt = nil
-        levelHistory = Array(repeating: 0, count: Self.historyLength)
         samplesLock.lock()
         let recorded = samples
         samples = []
+        captureID = nil
         samplesLock.unlock()
+        self.engine = nil
+        startedAt = nil
+        levelHistory = Array(repeating: 0, count: Self.historyLength)
         return Recording(samples: recorded, sampleRate: sampleRate)
     }
 
     private func pushLevel(_ rms: Float) {
-        guard isRunning else { return }
         // Typical speech RMS is well under 0.15; scale up so the waveform is
         // lively, then smooth against the previous bar to avoid flicker.
         let scaled = min(1, rms * 7)
